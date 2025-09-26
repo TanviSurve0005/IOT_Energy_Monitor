@@ -7,21 +7,40 @@ from sklearn.preprocessing import StandardScaler
 import redis
 import logging
 from datetime import datetime
+import os
+import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class StreamProcessor:
-    def __init__(self, kafka_broker='localhost:9092', redis_host='localhost'):
+    def __init__(self, kafka_broker=None, redis_host=None):
+        if kafka_broker is None:
+            kafka_broker = os.getenv('KAFKA_BROKER', 'kafka:9092')
+        if redis_host is None:
+            redis_host = os.getenv('REDIS_HOST', 'redis')
         try:
-            self.consumer = KafkaConsumer(
-                'sensor-data',
-                bootstrap_servers=[kafka_broker],
-                value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-                auto_offset_reset='earliest',
-                group_id='energy-monitor-group',
-                enable_auto_commit=True
-            )
+            # Retry connect to Kafka while broker is starting
+            attempts = 0
+            last_err = None
+            while attempts < 30:
+                try:
+                    self.consumer = KafkaConsumer(
+                        'sensor-data',
+                        bootstrap_servers=[kafka_broker],
+                        value_deserializer=lambda x: json.loads(x.decode('utf-8')),
+                        auto_offset_reset='earliest',
+                        group_id='energy-monitor-group',
+                        enable_auto_commit=True
+                    )
+                    break
+                except Exception as e:
+                    last_err = e
+                    attempts += 1
+                    logger.info(f"Waiting for Kafka at {kafka_broker}... (attempt {attempts})")
+                    time.sleep(2)
+            if not hasattr(self, 'consumer'):
+                raise last_err
             self.redis_client = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
             self.anomaly_model = self._train_anomaly_model()
             self.scaler = StandardScaler()
@@ -58,7 +77,7 @@ class StreamProcessor:
                     self.scaler.partial_fit(features)
                 features_scaled = self.scaler.transform(features)
                 
-                is_anomaly = self.anomaly_model.predict(features_scaled)[0] == -1
+                is_anomaly = bool(self.anomaly_model.predict(features_scaled)[0] == -1)
                 anomaly_score = float(self.anomaly_model.decision_function(features_scaled)[0])
                 
                 failure_prob = self._calculate_failure_probability(data, is_anomaly, anomaly_score)
@@ -106,9 +125,22 @@ class StreamProcessor:
         
         return min(base_score, 1.0)
     
+    def _to_serializable(self, obj):
+        if isinstance(obj, dict):
+            return {k: self._to_serializable(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [self._to_serializable(v) for v in obj]
+        try:
+            import numpy as _np
+            if isinstance(obj, _np.generic):
+                return obj.item()
+        except Exception:
+            pass
+        return obj
+
     def _store_sensor_data(self, data):
         sensor_key = f"sensor:{data['sensor_id']}"
-        self.redis_client.setex(sensor_key, 600, json.dumps(data))
+        self.redis_client.setex(sensor_key, 600, json.dumps(self._to_serializable(data)))
         
         location_key = f"location:{data['location']}:sensors"
         self.redis_client.sadd(location_key, data['sensor_id'])

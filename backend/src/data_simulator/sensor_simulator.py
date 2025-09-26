@@ -4,18 +4,35 @@ import time
 from datetime import datetime
 from kafka import KafkaProducer
 import logging
+import os
+import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class SensorSimulator:
-    def __init__(self, kafka_broker='localhost:9092'):
+    def __init__(self, kafka_broker=None):
+        if kafka_broker is None:
+            kafka_broker = os.getenv('KAFKA_BROKER', 'kafka:9092')
         try:
-            self.producer = KafkaProducer(
-                bootstrap_servers=[kafka_broker],
-                value_serializer=lambda x: json.dumps(x).encode('utf-8'),
-                retries=5
-            )
+            # Retry connect to Kafka while broker is starting
+            attempts = 0
+            last_err = None
+            while attempts < 30:
+                try:
+                    self.producer = KafkaProducer(
+                        bootstrap_servers=[kafka_broker],
+                        value_serializer=lambda x: json.dumps(x).encode('utf-8'),
+                        retries=5
+                    )
+                    break
+                except Exception as e:
+                    last_err = e
+                    attempts += 1
+                    logger.info(f"Waiting for Kafka at {kafka_broker}... (attempt {attempts})")
+                    time.sleep(2)
+            if not hasattr(self, 'producer'):
+                raise last_err
             self.sensors = self._initialize_sensors()
             logger.info(f"Initialized {len(self.sensors)} sensors")
         except Exception as e:

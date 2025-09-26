@@ -1,6 +1,6 @@
 services:
   zookeeper:
-    image: confluentinc/cp-zookeeper:latest
+    image: confluentinc/cp-zookeeper:7.3.2
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
@@ -8,7 +8,7 @@ services:
       - "2181:2181"
 
   kafka:
-    image: confluentinc/cp-kafka:latest
+    image: confluentinc/cp-kafka:7.3.2
     depends_on:
       - zookeeper
     ports:
@@ -48,7 +48,7 @@ services:
     working_dir: /app
     command: python main.py
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; exit(0) if requests.get('http://localhost:8000/health').status_code == 200 else exit(1)"]
+      test: ["CMD", "python", "-c", "import requests; exit(0) if requests.get('http://localhost:8000/api/health').status_code == 200 else exit(1)"]
       interval: 30s
       timeout: 10s
       retries: 3

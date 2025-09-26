@@ -2,6 +2,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import json
+import os
 import redis
 import asyncio
 import logging
@@ -33,13 +34,16 @@ app.add_middleware(
 )
 
 # Initialize components
+REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
+REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
+
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
 try:
-    redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
     redis_client.ping()  # Test connection
-    logger.info("Redis connection established")
+    logger.info(f"Redis connection established at {REDIS_HOST}:{REDIS_PORT}")
 except redis.ConnectionError:
-    logger.error("Failed to connect to Redis")
-    raise
+    # Do not crash the app; endpoints will handle degraded state until Redis is ready
+    logger.warning(f"Failed to connect to Redis at {REDIS_HOST}:{REDIS_PORT}. Running in degraded mode until Redis is available.")
 
 optimizer = EnergyOptimizer()
 
