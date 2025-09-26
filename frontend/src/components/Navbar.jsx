@@ -17,7 +17,7 @@ const Navbar = ({ activeTab, setActiveTab }) => {
       <div className="nav-content">
         <div className="nav-brand">
           <Zap size={24} />
-          <span>Smart Energy Monitor</span>
+          <span>VoltAI</span>
           <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
             {isConnected ? <Wifi size={16} /> : <WifiOff size={16} />}
             <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
