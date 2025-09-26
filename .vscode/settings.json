@@ -1,0 +1,16 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}/backend/venv/bin/python",
+    "python.analysis.extraPaths": [
+        "./backend/src",
+        "./backend/venv/lib/python3.11/site-packages"
+    ],
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.typeCheckingMode": "off",
+    "python.analysis.diagnosticMode": "workspace",
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        "**/venv": true,
+        "**/node_modules": true
+    }
+}

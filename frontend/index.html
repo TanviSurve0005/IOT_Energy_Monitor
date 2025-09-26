@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Energy Monitor | IoT Factory Management</title>
+    <meta name="description" content="Real-time IoT energy consumption monitoring and optimization system" />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        background: #0f172a;
+        color: #f1f5f9;
+        overflow-x: hidden;
+      }
+      #root {
+        min-height: 100vh;
+      }
+      
+      /* Loading animation */
+      .loading-spinner {
+        border: 3px solid #334155;
+        border-top: 3px solid #3b82f6;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin: 2rem auto;
+      }
+      
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div style="display: flex; justify-content: center; align-items: center; height: 100vh; flex-direction: column; gap: 1rem;">
+        <div class="loading-spinner"></div>
+        <p>Loading Smart Energy Monitor...</p>
+      </div>
+    </div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

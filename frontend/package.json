@@ -1,0 +1,32 @@
+{
+  "name": "iot-energy-frontend",
+  "version": "1.0.0",
+  "description": "React frontend for IoT Energy Monitor",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "vite --host 0.0.0.0"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.16.0",
+    "axios": "^1.5.1",
+    "chart.js": "^4.4.0",
+    "react-chartjs-2": "^5.0.1",
+    "recharts": "^2.8.0",
+    "lucide-react": "^0.292.0",
+    "socket.io-client": "^4.7.2"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.25",
+    "@types/react-dom": "^18.2.11",
+    "@vitejs/plugin-react": "^4.1.1",
+    "autoprefixer": "^10.4.16",
+    "postcss": "^8.4.31",
+    "tailwindcss": "^3.3.5",
+    "vite": "^4.5.0"
+  }
+}
