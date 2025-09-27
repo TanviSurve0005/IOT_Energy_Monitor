@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import io from 'socket.io-client';
 
 const EnergyContext = createContext();
 
@@ -15,7 +16,8 @@ export const EnergyProvider = ({ children }) => {
   const [realTimeData, setRealTimeData] = useState({
     stats: {},
     sensors: [],
-    alerts: []
+    alerts: [],
+    anomalies: []
   });
   const [optimizationSuggestions, setOptimizationSuggestions] = useState([]);
   const [historicalData, setHistoricalData] = useState([]);
@@ -151,7 +153,7 @@ export const EnergyProvider = ({ children }) => {
       };
 
     } catch (error) {
-      console.error('Failed to create WebSocket:', error);
+      console.error('❌ Failed to create WebSocket connection:', error);
       setIsConnected(false);
       isConnectingRef.current = false;
     }
@@ -203,7 +205,7 @@ export const EnergyProvider = ({ children }) => {
     };
   }, []);
 
-  // Fetch optimization suggestions
+  // Fetch optimization suggestions (simulated - would come from ML service)
   const fetchOptimizationSuggestions = async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/api/optimization/suggestions`);
@@ -213,7 +215,64 @@ export const EnergyProvider = ({ children }) => {
     }
   };
 
-  // Fetch historical data
+  // Generate mock optimization suggestions based on sensor data
+  const generateMockSuggestions = (sensors) => {
+    if (!sensors || sensors.length === 0) return [];
+
+    const suggestions = [];
+
+    // Analyze sensor data for optimization opportunities
+    sensors.forEach(sensor => {
+      if (sensor.energy_consumption > 10) {
+        suggestions.push({
+          id: `opt-${sensor.sensor_id}-1`,
+          sensor_id: sensor.sensor_id,
+          device_type: sensor.device_type,
+          location: sensor.location,
+          title: 'High Energy Consumption Detected',
+          description: `Consider optimizing ${sensor.device_type} operation during peak hours`,
+          type: 'energy_efficiency',
+          priority: 'high',
+          potential_savings: (sensor.energy_consumption * 0.15).toFixed(2),
+          action: 'schedule_optimization'
+        });
+      }
+
+      if (sensor.temperature > 70) {
+        suggestions.push({
+          id: `opt-${sensor.sensor_id}-2`,
+          sensor_id: sensor.sensor_id,
+          device_type: sensor.device_type,
+          location: sensor.location,
+          title: 'High Temperature Alert',
+          description: `Device temperature is elevated. Consider maintenance or cooling improvement`,
+          type: 'maintenance',
+          priority: 'medium',
+          potential_savings: 'N/A',
+          action: 'schedule_maintenance'
+        });
+      }
+
+      if (sensor.failure_probability > 0.7) {
+        suggestions.push({
+          id: `opt-${sensor.sensor_id}-3`,
+          sensor_id: sensor.sensor_id,
+          device_type: sensor.device_type,
+          location: sensor.location,
+          title: 'High Failure Probability',
+          description: `Predictive maintenance recommended for ${sensor.device_type}`,
+          type: 'predictive_maintenance',
+          priority: 'critical',
+          potential_savings: 'Preventative',
+          action: 'immediate_maintenance'
+        });
+      }
+    });
+
+    return suggestions.slice(0, 10); // Return top 10 suggestions
+  };
+
+  // Fetch historical data (simulated)
   const fetchHistoricalData = async (hours = 24) => {
     try {
       const response = await axios.get(`${API_BASE_URL}/api/analytics/history?hours=${hours}`);
@@ -306,6 +365,8 @@ export const EnergyProvider = ({ children }) => {
     },
     optimizationSuggestions,
     historicalData,
+    
+    // Status
     isConnected,
     loading,
     consumerHost,

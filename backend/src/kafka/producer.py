@@ -127,7 +127,7 @@ class SensorSimulator:
             self.producer.close()
     
     def _generate_sensor_reading(self, sensor):
-        """Generate a single sensor reading"""
+        """Generate a single sensor reading for the same sensor"""
         current_hour = datetime.now().hour
         is_weekday = datetime.now().weekday() < 5
         
@@ -168,7 +168,8 @@ class SensorSimulator:
             'energy_consumption': round(current * 220 / 1000, 2),  # kWh
             'voltage': 220,
             'power_factor': round(random.uniform(0.85, 0.95), 2),
-            'producer_host': os.getenv('HOST_IP', 'unknown')
+            'producer_host': os.getenv('HOST_IP', 'unknown'),
+            'is_anomaly': status in ['critical', 'warning']
         }
     
     def _send_batch(self, batch_data):
@@ -188,6 +189,14 @@ class SensorSimulator:
             
         except Exception as e:
             logger.error(f"Failed to send batch to Kafka: {e}")
+
+    def get_sensor_count(self):
+        """Get the current number of active sensors"""
+        return len(self.sensors)
+    
+    def get_sensor_list(self):
+        """Get list of all sensor IDs"""
+        return [sensor['sensor_id'] for sensor in self.sensors]
 
 if __name__ == "__main__":
     simulator = SensorSimulator()

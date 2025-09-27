@@ -1,27 +1,19 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import json
 import redis
-import asyncio
+import json
 import logging
-from datetime import datetime, timedelta
+import os
 from typing import List, Dict, Any
+import asyncio
+from datetime import datetime, timedelta
 import pandas as pd
-from ml_models.optimizer import EnergyOptimizer
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="IoT Smart Energy Monitor API",
-    description="Real-time energy consumption monitoring and optimization system",
-    version="2.0.0",
-    docs_url="/api/docs",
-    redoc_url="/api/redoc"
-)
+app = FastAPI(title="IoT Energy Monitor API - Consumer Side")
 
 # CORS middleware
 app.add_middleware(
@@ -32,31 +24,61 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize components
-try:
-    redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
-    redis_client.ping()  # Test connection
-    logger.info("Redis connection established")
-except redis.ConnectionError:
-    logger.error("Failed to connect to Redis")
-    raise
+# Redis connection
+def get_redis_client():
+    redis_host = os.getenv('REDIS_HOST', 'redis')
+    return redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
 
-optimizer = EnergyOptimizer()
+# Producer Status Tracker
+class ProducerStatusTracker:
+    def __init__(self):
+        self.last_data_time = None
+        self.producer_timeout = 30  # 30 seconds timeout
+        self.is_producer_active = False
+    
+    def update_data_received(self):
+        """Called when new data is received from producer"""
+        self.last_data_time = datetime.utcnow()
+        self.is_producer_active = True
+    
+    def check_producer_status(self):
+        """Check if producer is still active"""
+        if self.last_data_time is None:
+            return False
+        
+        time_since_last_data = datetime.utcnow() - self.last_data_time
+        if time_since_last_data.total_seconds() > self.producer_timeout:
+            self.is_producer_active = False
+            return False
+        
+        return True
+    
+    def get_producer_status(self):
+        """Get current producer status"""
+        is_active = self.check_producer_status()
+        return {
+            "is_active": is_active,
+            "last_data_time": self.last_data_time.isoformat() if self.last_data_time else None,
+            "time_since_last_data": (datetime.utcnow() - self.last_data_time).total_seconds() if self.last_data_time else None
+        }
 
-# WebSocket connection manager
+# Initialize the producer status tracker
+producer_tracker = ProducerStatusTracker()
+
+# WebSocket manager
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
-    
+
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
         logger.info(f"New WebSocket connection. Total: {len(self.active_connections)}")
-    
+
     def disconnect(self, websocket: WebSocket):
         self.active_connections.remove(websocket)
         logger.info(f"WebSocket disconnected. Total: {len(self.active_connections)}")
-    
+
     async def broadcast(self, message: Dict[str, Any]):
         disconnected = []
         for connection in self.active_connections:
@@ -71,12 +93,12 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# Utility functions
 def get_sensor_data(sensor_id: str = None) -> List[Dict]:
     """Retrieve sensor data from Redis"""
     sensors_data = []
     
     try:
+        redis_client = get_redis_client()
         if sensor_id:
             # Get specific sensor
             key = f"sensor:{sensor_id}"
@@ -98,211 +120,183 @@ def get_sensor_data(sensor_id: str = None) -> List[Dict]:
     
     return sensors_data
 
-def calculate_dashboard_stats() -> Dict[str, Any]:
-    """Calculate comprehensive dashboard statistics"""
+def get_realtime_sensor_data() -> Dict[str, Any]:
+    """Get real-time sensor data for WebSocket"""
     sensors_data = get_sensor_data()
+    
+    # Update producer status based on data availability
+    if sensors_data:
+        producer_tracker.update_data_received()
+    else:
+        # If no data, check if producer is still active
+        producer_tracker.check_producer_status()
     
     if not sensors_data:
         return {
-            "total_energy": 0,
-            "critical_sensors": 0,
-            "warning_sensors": 0,
-            "total_sensors": 0,
-            "efficiency_score": 100,
-            "total_power": 0,
-            "avg_temperature": 0,
-            "avg_pressure": 0,
-            "anomaly_count": 0,
-            "timestamp": datetime.utcnow().isoformat()
+            "sensors": [],
+            "stats": {
+                "total_energy_consumption": 0,
+                "total_readings": 0,
+                "anomaly_count": 0,
+                "average_consumption": 0,
+                "status_normal": 0,
+                "status_warning": 0,
+                "status_critical": 0
+            },
+            "producer_status": producer_tracker.get_producer_status()
         }
     
+    # Transform sensor data to match frontend expectations
+    transformed_sensors = []
+    for sensor in sensors_data:
+        transformed_sensors.append({
+            "id": sensor.get("sensor_id", "unknown"),
+            "name": sensor.get("name", f"Sensor {sensor.get('sensor_id', 'unknown')}"),
+            "location": sensor.get("location", "Unknown"),
+            "status": sensor.get("status", "normal"),
+            "current": sensor.get("current", 0),
+            "voltage": sensor.get("voltage", 0),
+            "power": sensor.get("power", 0),
+            "energy_consumption": sensor.get("energy_consumption", 0),
+            "temperature": sensor.get("temperature", 0),
+            "pressure": sensor.get("pressure", 0),
+            "power_factor": sensor.get("power_factor", 0.9),
+            "is_anomaly": sensor.get("is_anomaly", False),
+            "timestamp": sensor.get("timestamp", datetime.utcnow().isoformat())
+        })
+    
+    # Calculate stats in the format expected by frontend
     df = pd.DataFrame(sensors_data)
-    
-    total_energy = df['energy_consumption'].sum()
-    critical_sensors = len(df[df['status'] == 'critical'])
-    warning_sensors = len(df[df['status'] == 'warning'])
-    total_sensors = len(df)
-    anomaly_count = len(df[df['is_anomaly'] == True])
-    
-    # Calculate efficiency score (0-100)
-    critical_penalty = critical_sensors * 3
-    warning_penalty = warning_sensors * 1
-    anomaly_penalty = anomaly_count * 2
-    efficiency_score = max(0, 100 - critical_penalty - warning_penalty - anomaly_penalty)
+    stats = {
+        "total_energy_consumption": round(df['energy_consumption'].sum(), 2),
+        "total_readings": len(sensors_data),
+        "anomaly_count": len(df[df['is_anomaly'] == True]),
+        "average_consumption": round(df['energy_consumption'].mean(), 2),
+        "status_normal": len(df[df['status'] == 'normal']),
+        "status_warning": len(df[df['status'] == 'warning']),
+        "status_critical": len(df[df['status'] == 'critical'])
+    }
     
     return {
-        "total_energy": round(total_energy, 2),
-        "critical_sensors": critical_sensors,
-        "warning_sensors": warning_sensors,
-        "total_sensors": total_sensors,
-        "efficiency_score": round(efficiency_score, 1),
-        "total_power": round(df['current'].sum(), 1),
-        "avg_temperature": round(df['temperature'].mean(), 1),
-        "avg_pressure": round(df['pressure'].mean(), 2),
-        "anomaly_count": anomaly_count,
-        "timestamp": datetime.utcnow().isoformat()
+        "sensors": transformed_sensors,
+        "stats": stats,
+        "producer_status": producer_tracker.get_producer_status()
     }
 
-# API Routes
 @app.get("/")
 async def root():
     return {
-        "message": "IoT Smart Energy Monitor API",
-        "version": "2.0.0",
-        "status": "operational",
-        "timestamp": datetime.utcnow().isoformat(),
-        "endpoints": {
-            "documentation": "/api/docs",
-            "sensors": "/api/sensors",
-            "dashboard": "/api/dashboard/stats",
-            "optimization": "/api/optimization/suggestions",
-            "health": "/api/health",
-            "websocket": "/ws"
-        }
+        "message": "IoT Energy Monitor API - Consumer Side",
+        "status": "running",
+        "consumer_host": os.getenv('HOST_IP', 'unknown')
     }
 
+@app.get("/health")
+async def health_check():
+    try:
+        redis_client = get_redis_client()
+        redis_client.ping()
+        return {
+            "status": "healthy",
+            "redis": "connected",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Redis connection failed: {e}")
+
 @app.get("/api/sensors")
-async def get_all_sensors(limit: int = 100, offset: int = 0):
-    """Get all sensor data with pagination"""
-    sensors_data = get_sensor_data()
-    
-    # Apply pagination
-    paginated_data = sensors_data[offset:offset + limit]
-    
-    return {
-        "sensors": paginated_data,
-        "pagination": {
-            "total": len(sensors_data),
-            "limit": limit,
-            "offset": offset,
-            "has_more": offset + limit < len(sensors_data)
-        },
-        "timestamp": datetime.utcnow().isoformat()
-    }
+async def get_all_sensors():
+    """Get all sensor data from Redis"""
+    try:
+        sensors_data = get_sensor_data()
+        
+        return {
+            "sensors": sensors_data,
+            "count": len(sensors_data),
+            "consumer_host": os.getenv('HOST_IP', 'unknown')
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching sensors: {e}")
 
 @app.get("/api/sensors/{sensor_id}")
 async def get_sensor(sensor_id: str):
     """Get specific sensor data"""
-    sensor_data = get_sensor_data(sensor_id)
-    
-    if not sensor_data:
-        raise HTTPException(status_code=404, detail="Sensor not found")
-    
-    return {
-        "sensor": sensor_data[0],
-        "timestamp": datetime.utcnow().isoformat()
-    }
+    try:
+        sensor_data = get_sensor_data(sensor_id)
+        
+        if not sensor_data:
+            raise HTTPException(status_code=404, detail="Sensor not found")
+        
+        return sensor_data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching sensor: {e}")
 
 @app.get("/api/dashboard/stats")
 async def get_dashboard_stats():
-    """Get comprehensive dashboard statistics"""
-    stats = calculate_dashboard_stats()
-    return JSONResponse(content=stats)
-
-@app.get("/api/optimization/suggestions")
-async def get_optimization_suggestions(limit: int = 10):
-    """Get energy optimization suggestions"""
-    sensors_data = get_sensor_data()
-    suggestions = optimizer.generate_suggestions(sensors_data)[:limit]
-    
-    return {
-        "suggestions": suggestions,
-        "total_generated": len(suggestions),
-        "generated_at": datetime.utcnow().isoformat()
-    }
-
-@app.get("/api/analytics/history")
-async def get_analytics_history(hours: int = 24):
-    """Get historical analytics data (simulated)"""
-    # In a real system, this would query a time-series database
-    end_time = datetime.utcnow()
-    start_time = end_time - timedelta(hours=hours)
-    
-    # Generate simulated historical data
-    history = []
-    current_time = start_time
-    
-    while current_time <= end_time:
-        # Simulate data points with some variation
-        base_energy = 1500  # Base energy consumption
-        hour_variation = abs(12 - current_time.hour)  # Peak around noon
-        energy = base_energy * (1 - hour_variation * 0.03) * (0.9 + 0.2 * (current_time.minute / 60))
-        
-        history.append({
-            "timestamp": current_time.isoformat(),
-            "energy_consumption": round(energy, 2),
-            "active_sensors": 280 + int(20 * (current_time.minute / 60)),
-            "efficiency_score": 85 + int(10 * (current_time.minute / 60))
-        })
-        
-        current_time += timedelta(minutes=5)  # 5-minute intervals
-    
-    return {
-        "history": history[-100:],  # Return last 100 points
-        "time_range": {
-            "start": start_time.isoformat(),
-            "end": end_time.isoformat()
-        }
-    }
-
-@app.get("/api/health")
-async def health_check():
-    """Comprehensive health check endpoint"""
-    redis_healthy = False
+    """Get dashboard statistics"""
     try:
-        redis_healthy = redis_client.ping()
-    except:
-        pass
-    
-    sensors_data = get_sensor_data()
-    
-    return {
-        "status": "healthy" if redis_healthy and sensors_data else "degraded",
-        "components": {
-            "redis": "healthy" if redis_healthy else "unhealthy",
-            "sensor_data": "available" if sensors_data else "unavailable",
-            "api": "healthy"
-        },
-        "metrics": {
-            "active_sensors": len(sensors_data),
-            "redis_connected": redis_healthy,
-            "uptime": "unknown"  # Would be calculated in real deployment
-        },
-        "timestamp": datetime.utcnow().isoformat()
-    }
+        realtime_data = get_realtime_sensor_data()
+        return JSONResponse(content=realtime_data["stats"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching stats: {e}")
 
-# WebSocket endpoint for real-time updates
+@app.get("/api/energy-data/realtime")
+async def get_realtime_energy_data():
+    """Get real-time energy data for frontend"""
+    realtime_data = get_realtime_sensor_data()
+    return JSONResponse(content=realtime_data)
+
+@app.get("/api/producer/status")
+async def get_producer_status():
+    """Get current producer status"""
+    return producer_tracker.get_producer_status()
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     
     try:
-        # Send initial data
-        initial_stats = calculate_dashboard_stats()
+        # Send initial data with sensors and stats
+        initial_data = get_realtime_sensor_data()
         await websocket.send_json({
             "type": "initial_data",
-            "data": initial_stats,
+            "sensors": initial_data["sensors"],
+            "stats": initial_data["stats"],
+            "producer_status": initial_data["producer_status"],
             "timestamp": datetime.utcnow().isoformat()
         })
         
         # Keep sending updates
         while True:
-            stats = calculate_dashboard_stats()
+            realtime_data = get_realtime_sensor_data()
             
             await websocket.send_json({
-                "type": "stats_update",
-                "data": stats,
+                "type": "realtime_update",
+                "sensors": realtime_data["sensors"],
+                "stats": realtime_data["stats"],
+                "producer_status": realtime_data["producer_status"],
                 "timestamp": datetime.utcnow().isoformat()
             })
             
-            # Send sensor alerts if any critical issues
-            critical_sensors = [s for s in get_sensor_data() if s.get('status') == 'critical']
+            # Send producer status alerts
+            if not realtime_data["producer_status"]["is_active"]:
+                await websocket.send_json({
+                    "type": "producer_disconnected",
+                    "message": "Producer has stopped sending data",
+                    "producer_status": realtime_data["producer_status"],
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+            
+            # Send critical alerts
+            critical_sensors = [s for s in realtime_data["sensors"] if s.get('status') == 'critical']
             if critical_sensors:
                 await websocket.send_json({
                     "type": "critical_alert",
                     "data": {
                         "count": len(critical_sensors),
-                        "sensors": critical_sensors[:5]  # Send first 5 critical sensors
+                        "sensors": critical_sensors[:5]
                     },
                     "timestamp": datetime.utcnow().isoformat()
                 })
@@ -316,22 +310,10 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}")
         manager.disconnect(websocket)
 
-# Error handlers
-@app.exception_handler(404)
-async def not_found_handler(request, exc):
-    return JSONResponse(
-        status_code=404,
-        content={"error": "Endpoint not found", "path": request.url.path}
-    )
-
-@app.exception_handler(500)
-async def internal_error_handler(request, exc):
-    logger.error(f"Internal server error: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"error": "Internal server error"}
-    )
-
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    host = os.getenv('API_HOST', '0.0.0.0')
+    port = int(os.getenv('API_PORT', '8000'))
+    
+    logger.info(f"Starting API server on {host}:{port}")
+    uvicorn.run(app, host=host, port=port, log_level="info")

@@ -12,7 +12,11 @@ __pycache__/
 venv/
 ENV/
 env/
+<<<<<<< HEAD
 
+=======
+.venv/
+>>>>>>> 6f37a3e6f310eadee750238f8dbbe484b236c867
 
 # Jupyter notebooks checkpoints
 .ipynb_checkpoints

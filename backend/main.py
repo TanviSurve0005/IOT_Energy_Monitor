@@ -1,4 +1,5 @@
 import threading
+import os
 from src.data_simulator.sensor_simulator import SensorSimulator
 from src.stream_processor.processor import StreamProcessor
 import uvicorn
@@ -10,12 +11,12 @@ def start_backend():
     
     # Start sensor simulator
     print("Starting sensor simulator...")
-    simulator_thread = threading.Thread(target=lambda: SensorSimulator().generate_sensor_data(), daemon=True)
+    simulator_thread = threading.Thread(target=lambda: SensorSimulator(os.getenv('KAFKA_BROKER', 'kafka:9092')).generate_sensor_data(), daemon=True)
     simulator_thread.start()
     
     # Start stream processor
     print("Starting stream processor...")
-    processor_thread = threading.Thread(target=lambda: StreamProcessor().process_stream(), daemon=True)
+    processor_thread = threading.Thread(target=lambda: StreamProcessor(os.getenv('KAFKA_BROKER', 'kafka:9092'), os.getenv('REDIS_HOST', 'redis')).process_stream(), daemon=True)
     processor_thread.start()
     
     # Start FastAPI server

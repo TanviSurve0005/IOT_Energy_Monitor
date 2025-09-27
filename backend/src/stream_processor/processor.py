@@ -1,5 +1,6 @@
 import json
-import random  # FIXED: Added missing import
+import random
+import os
 from kafka import KafkaConsumer
 import numpy as np
 from sklearn.ensemble import IsolationForest
