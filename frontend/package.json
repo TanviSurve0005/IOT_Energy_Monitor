@@ -10,14 +10,16 @@
     "start": "vite --host 0.0.0.0"
   },
   "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^6.16.0",
     "axios": "^1.5.1",
     "chart.js": "^4.4.0",
-    "react-chartjs-2": "^5.0.1",
-    "recharts": "^2.8.0",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^3.0.3",
     "lucide-react": "^0.292.0",
+    "react": "^18.2.0",
+    "react-chartjs-2": "^5.0.1",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.16.0",
+    "recharts": "^2.8.0",
     "socket.io-client": "^4.7.2"
   },
   "devDependencies": {

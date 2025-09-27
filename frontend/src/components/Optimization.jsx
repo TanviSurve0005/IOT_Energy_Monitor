@@ -54,7 +54,7 @@ const SuggestionCard = ({ suggestion, onApply }) => {
         <div className="suggestion-details">
           <div className="detail-item">
             <Zap size={14} />
-            <span>Device: {sensor_id}</span>
+            <span>Device: {suggestion.sensor_id}</span>
           </div>
           <div className="detail-item">
             <Settings size={14} />

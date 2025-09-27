@@ -129,7 +129,8 @@ const Dashboard = () => {
 
       {/* Main Content Area */}
       <div className="dashboard-content">
-        <div className="content-column">
+        {/* Row 1: Real-time Chart and Critical Alerts */}
+        <div className="dashboard-row">
           <div className="chart-section">
             <div className="chart-container">
               <div className="chart-header">
@@ -145,31 +146,6 @@ const Dashboard = () => {
             </div>
           </div>
 
-          <div className="map-section">
-            <div className="chart-container">
-              <div className="chart-header">
-                <h3 className="chart-title">Factory Floor Monitoring</h3>
-                <div className="chart-legend">
-                  <span className="legend-item">
-                    <div className="legend-color green"></div>
-                    Normal
-                  </span>
-                  <span className="legend-item">
-                    <div className="legend-color orange"></div>
-                    Warning
-                  </span>
-                  <span className="legend-item">
-                    <div className="legend-color red"></div>
-                    Critical
-                  </span>
-                </div>
-              </div>
-              <AnomalyMap sensors={realTimeData.sensors || []} />
-            </div>
-          </div>
-        </div>
-
-        <div className="sidebar">
           <div className="alerts-section">
             <div className="section-header">
               <AlertTriangle size={20} />
@@ -189,6 +165,18 @@ const Dashboard = () => {
                   <span>All systems operating normally</span>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+
+        {/* Row 2: Factory Floor and System Status */}
+        <div className="dashboard-row">
+          <div className="map-section">
+            <div className="chart-container">
+              <div className="chart-header">
+                <h3 className="chart-title">Factory Floor Monitoring</h3>
+              </div>
+              <AnomalyMap sensors={realTimeData.sensors || []} />
             </div>
           </div>
 

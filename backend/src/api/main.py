@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="IoT Smart Energy Monitor API",
+    title="IoT Monitor API",
     description="Real-time energy consumption monitoring and optimization system",
     version="2.0.0",
     docs_url="/api/docs",

@@ -146,7 +146,7 @@ const RealTimeChart = () => {
         ref={canvasRef} 
         width={800} 
         height={300}
-        style={{ width: '100%', height: '300px' }}
+        style={{ width: '100%', height: '100%', flex: 1 }}
       />
     </div>
   );
