@@ -20,6 +20,7 @@ class SensorSimulator:
         self.kafka_broker = kafka_broker
         self.producer = self._initialize_kafka_producer()
         self.sensors = self._initialize_sensors()
+        self.total_sensors = 300  # Fixed number of active sensors
         logger.info(f"Initialized {len(self.sensors)} sensors on Kafka broker: {kafka_broker}")
     
     def _get_local_ip(self):
@@ -59,11 +60,13 @@ class SensorSimulator:
                 time.sleep(2)
     
     def _initialize_sensors(self):
+        """Initialize exactly 300 sensors that will be reused in each iteration"""
         sensors = []
         device_types = ['motor', 'compressor', 'conveyor', 'furnace', 'pump', 'generator', 'cooling_tower']
         locations = ['floor_a', 'floor_b', 'floor_c', 'assembly_line', 'warehouse', 'production_a', 'production_b']
         
-        for i in range(50):  # Reduced to 50 sensors for better performance over WiFi
+        # Create exactly 300 sensors
+        for i in range(self.total_sensors):
             base_current = random.uniform(5, 50)
             base_temp = random.uniform(20, 40)
             base_pressure = random.uniform(1, 10)
@@ -77,18 +80,25 @@ class SensorSimulator:
                 'base_pressure': base_pressure,
                 'installation_date': f"2024-{random.randint(1,12):02d}-{random.randint(1,28):02d}"
             })
+        
+        logger.info(f"Initialized {len(sensors)} sensors (fixed set for all iterations)")
         return sensors
     
     def generate_sensor_data(self):
-        """Generate and stream sensor data to Kafka"""
-        batch_size = 20  # Smaller batches for WiFi
-        logger.info("Starting sensor data generation...")
+        """Generate and stream sensor data to Kafka using the same 300 sensors"""
+        batch_size = 50  # Increased batch size for 300 sensors
+        logger.info(f"Starting sensor data generation with {self.total_sensors} active sensors...")
         
         try:
+            iteration_count = 0
             while True:
+                iteration_count += 1
                 batch_data = []
                 start_time = time.time()
                 
+                logger.info(f"Starting iteration {iteration_count} with {len(self.sensors)} sensors")
+                
+                # Use the same 300 sensors for each iteration
                 for sensor in self.sensors:
                     data = self._generate_sensor_reading(sensor)
                     batch_data.append(data)
@@ -102,9 +112,11 @@ class SensorSimulator:
                 if batch_data:
                     self._send_batch(batch_data)
                 
+                logger.info(f"Completed iteration {iteration_count} - processed {len(self.sensors)} sensors")
+                
                 # Adaptive sleep based on processing time
                 processing_time = time.time() - start_time
-                sleep_time = max(1, 5 - processing_time)  # Ensure at least 1 second between batches
+                sleep_time = max(2, 10 - processing_time)  # Ensure at least 2 seconds between iterations
                 time.sleep(sleep_time)
                 
         except KeyboardInterrupt:

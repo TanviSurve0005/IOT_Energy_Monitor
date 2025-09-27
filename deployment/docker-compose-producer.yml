@@ -12,7 +12,7 @@ services:
       - kafka-network
 
   kafka:
-    image: confluentinc/cp-kafka:latest
+    image: confluentinc/cp-kafka:7.4.0
     depends_on:
       - zookeeper
     ports:
@@ -24,6 +24,7 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
     networks:
       - kafka-network
 
@@ -35,10 +36,7 @@ services:
     depends_on:
       - kafka
     command: >
-      sh -c "cd /app && 
-             python -c 'from src.data_simulator.sensor_simulator import SensorSimulator; 
-                       simulator = SensorSimulator(); 
-                       simulator.start_streaming()'"
+      sh -c "cd /app && python -c 'from src.data_simulator.sensor_simulator import SensorSimulator; simulator = SensorSimulator(kafka_broker=\"kafka:9092\"); simulator.generate_sensor_data()'"
     networks:
       - kafka-network
 
