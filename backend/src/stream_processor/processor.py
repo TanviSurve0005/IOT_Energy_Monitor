@@ -12,20 +12,68 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class StreamProcessor:
-    def __init__(self, kafka_broker='localhost:9092', redis_host='localhost'):
+    def __init__(self, kafka_broker=None, redis_host=None):
+        # Get consumer laptop IP and producer IP
+        self.consumer_ip = os.getenv('HOST_IP', 'localhost')
+        self.producer_ip = os.getenv('PRODUCER_IP', 'localhost')
+        
+        if kafka_broker is None:
+            kafka_broker = f"{self.producer_ip}:9092"
+        if redis_host is None:
+            redis_host = os.getenv('REDIS_HOST', 'redis')
+        
+        self.kafka_broker = kafka_broker
+        self.redis_host = redis_host
+        self.consumer = self._initialize_kafka_consumer()
+        self.redis_client = self._initialize_redis()
+        self.anomaly_model = self._train_anomaly_model()
+        self.scaler = StandardScaler()
+        logger.info(f"Stream processor initialized on {self.consumer_ip}, connecting to Kafka at {kafka_broker}")
+    
+    def _initialize_kafka_consumer(self):
+        """Initialize Kafka consumer with retry logic"""
+        attempts = 0
+        max_attempts = 30
+        
+        logger.info(f"Attempting to connect to Kafka at: {self.kafka_broker}")
+        
+        while attempts < max_attempts:
+            try:
+                consumer = KafkaConsumer(
+                    'sensor-data',
+                    bootstrap_servers=[self.kafka_broker],
+                    value_deserializer=lambda x: json.loads(x.decode('utf-8')),
+                    auto_offset_reset='latest',  # Start from latest messages
+                    group_id='energy-monitor-consumer-group',
+                    enable_auto_commit=True,
+                    consumer_timeout_ms=10000,  # Timeout after 10 seconds of no messages
+                    max_poll_records=50,  # Process in smaller batches
+                    api_version=(0, 10, 1),  # Specify API version for compatibility
+                    security_protocol='PLAINTEXT'  # Explicitly set security protocol
+                )
+                logger.info(f"Successfully connected to Kafka consumer at {self.kafka_broker}")
+                return consumer
+            except Exception as e:
+                attempts += 1
+                logger.warning(f"Attempt {attempts}/{max_attempts}: Failed to connect to Kafka at {self.kafka_broker}: {e}")
+                if attempts >= max_attempts:
+                    raise Exception(f"Failed to connect to Kafka after {max_attempts} attempts")
+                time.sleep(2)
+    
+    def _initialize_redis(self):
+        """Initialize Redis connection"""
         try:
-            self.consumer = KafkaConsumer(
-                'sensor-data',
-                bootstrap_servers=[kafka_broker],
-                value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-                auto_offset_reset='earliest',
-                group_id='energy-monitor-group',
-                enable_auto_commit=True
+            client = redis.Redis(
+                host=self.redis_host, 
+                port=6379, 
+                db=0, 
+                decode_responses=True,
+                socket_connect_timeout=5,
+                retry_on_timeout=True
             )
-            self.redis_client = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
-            self.anomaly_model = self._train_anomaly_model()
-            self.scaler = StandardScaler()
-            logger.info("Stream processor initialized successfully")
+            client.ping()  # Test connection
+            logger.info(f"Connected to Redis at {self.redis_host}")
+            return client
         except Exception as e:
             logger.error(f"Failed to initialize stream processor: {e}")
             raise

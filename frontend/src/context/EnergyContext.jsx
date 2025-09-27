@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
 const EnergyContext = createContext();
@@ -21,162 +21,312 @@ export const EnergyProvider = ({ children }) => {
   const [historicalData, setHistoricalData] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [consumerHost, setConsumerHost] = useState('');
+  const [producerHost, setProducerHost] = useState('');
+  const [kafkaStatus, setKafkaStatus] = useState('disconnected');
+  
+  // Add producer status state
+  const [producerStatus, setProducerStatus] = useState({
+    is_active: true,
+    last_data_time: null,
+    time_since_last_data: null
+  });
 
-  // WebSocket connection
+  // Use ref to store WebSocket instance and connection state
+  const wsRef = useRef(null);
+  const reconnectTimeoutRef = useRef(null);
+  const isConnectingRef = useRef(false);
+
+  // API base URL - points to consumer laptop's API
+  const API_BASE_URL = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000`;
+
+  // WebSocket connection for real-time updates
   const connectWebSocket = () => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.hostname}:8000/ws`;
-    
-    try {
-      const ws = new WebSocket(wsUrl);
+    // Prevent multiple simultaneous connection attempts
+    if (isConnectingRef.current || (wsRef.current && wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
 
-      ws.onopen = () => {
-        console.log('WebSocket connected');
+    try {
+      isConnectingRef.current = true;
+      
+      // Close existing connection if any
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+
+      // Create new WebSocket connection
+      const wsUrl = API_BASE_URL.replace('http', 'ws') + '/ws';
+      const socket = new WebSocket(wsUrl);
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        console.log('✅ Connected to consumer API via WebSocket');
         setIsConnected(true);
+        isConnectingRef.current = false;
         setLoading(false);
       };
 
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        
-        switch (data.type) {
-          case 'initial_data':
-          case 'stats_update':
-            setRealTimeData(prev => ({
-              ...prev,
-              stats: data.data
-            }));
-            break;
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
           
-          case 'critical_alert':
-            setRealTimeData(prev => ({
-              ...prev,
-              alerts: data.data.sensors
-            }));
-            break;
-          
-          default:
-            console.log('Unknown message type:', data.type);
+          switch (message.type) {
+            case 'initial_data':
+              setRealTimeData(prev => ({
+                ...prev,
+                stats: message.stats || {},
+                sensors: message.sensors || []
+              }));
+              if (message.producer_status) {
+                setProducerStatus(message.producer_status);
+              }
+              setIsConnected(true);
+              setLoading(false);
+              break;
+              
+            case 'realtime_update':
+              setRealTimeData(prev => ({
+                ...prev,
+                stats: message.stats || {},
+                sensors: message.sensors || []
+              }));
+              if (message.producer_status) {
+                setProducerStatus(message.producer_status);
+              }
+              break;
+              
+            case 'producer_disconnected':
+              setProducerStatus(message.producer_status);
+              // Clear real-time data when producer disconnects
+              setRealTimeData({
+                stats: {},
+                sensors: [],
+                alerts: [],
+                anomalies: []
+              });
+              console.warn('⚠️ Producer has stopped sending data:', message.message);
+              break;
+              
+            case 'critical_alert':
+              // Handle critical alerts
+              console.warn('🚨 Critical alert received:', message.data);
+              break;
+              
+            default:
+              console.log('Unknown message type:', message.type);
+          }
+        } catch (error) {
+          console.error('❌ Error parsing WebSocket message:', error);
         }
       };
 
-      ws.onclose = () => {
-        console.log('WebSocket disconnected');
+      socket.onclose = (event) => {
+        console.log('🔌 WebSocket connection closed:', event.code, event.reason);
         setIsConnected(false);
-        // Attempt reconnect after 3 seconds
-        setTimeout(connectWebSocket, 3000);
+        isConnectingRef.current = false;
+        
+        // Clear data when disconnected
+        setRealTimeData({
+          stats: {},
+          sensors: [],
+          alerts: [],
+          anomalies: []
+        });
+        
+        // Attempt to reconnect after a delay
+        if (event.code !== 1000) { // Don't reconnect if closed normally
+          reconnectTimeoutRef.current = setTimeout(() => {
+            console.log('🔄 Attempting to reconnect WebSocket...');
+            connectWebSocket();
+          }, 5000);
+        }
       };
 
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
+      socket.onerror = (error) => {
+        console.error('❌ WebSocket error:', error);
         setIsConnected(false);
+        isConnectingRef.current = false;
       };
 
-      return ws;
     } catch (error) {
       console.error('Failed to create WebSocket:', error);
       setIsConnected(false);
-      setLoading(false);
+      isConnectingRef.current = false;
     }
   };
 
-  // Fetch initial data
-  const fetchInitialData = async () => {
-    try {
-      const [sensorsResponse, suggestionsResponse, historyResponse] = await Promise.all([
-        axios.get('/api/sensors?limit=50'),
-        axios.get('/api/optimization/suggestions'),
-        axios.get('/api/analytics/history?hours=24')
-      ]);
+  // Fetch initial data and connect WebSocket
+  useEffect(() => {
+    const fetchInitialData = async () => {
+      try {
+        // Fetch dashboard stats
+        const statsResponse = await axios.get(`${API_BASE_URL}/api/dashboard/stats`);
+        setRealTimeData(prev => ({
+          ...prev,
+          stats: statsResponse.data
+        }));
 
-      setRealTimeData(prev => ({
-        ...prev,
-        sensors: sensorsResponse.data.sensors
-      }));
+        // Fetch sensors
+        const sensorsResponse = await axios.get(`${API_BASE_URL}/api/sensors`);
+        setRealTimeData(prev => ({
+          ...prev,
+          sensors: sensorsResponse.data.sensors || []
+        }));
 
-      setOptimizationSuggestions(suggestionsResponse.data.suggestions);
-      setHistoricalData(historyResponse.data.history);
-    } catch (error) {
-      console.error('Error fetching initial data:', error);
-    }
-  };
+        // Set connected state when data is successfully fetched
+        setIsConnected(true);
+        setLoading(false);
+        
+        console.log('✅ Successfully connected to API and fetched initial data');
+      } catch (error) {
+        console.error('❌ Error fetching initial data:', error);
+        setIsConnected(false);
+        setLoading(false);
+      }
+    };
 
-  // Fetch sensors data
-  const fetchSensors = async (limit = 100, offset = 0) => {
-    try {
-      const response = await axios.get(`/api/sensors?limit=${limit}&offset=${offset}`);
-      return response.data;
-    } catch (error) {
-      console.error('Error fetching sensors:', error);
-      return { sensors: [], pagination: { total: 0 } };
-    }
-  };
+    fetchInitialData();
+    connectWebSocket();
+
+    // Cleanup function
+    return () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      // Properly close WebSocket connection
+      if (wsRef.current) {
+        wsRef.current.close(1000, 'Component unmounting');
+        wsRef.current = null;
+      }
+    };
+  }, []);
 
   // Fetch optimization suggestions
   const fetchOptimizationSuggestions = async () => {
     try {
-      const response = await axios.get('/api/optimization/suggestions');
-      setOptimizationSuggestions(response.data.suggestions);
-      return response.data.suggestions;
+      const response = await axios.get(`${API_BASE_URL}/api/optimization/suggestions`);
+      setOptimizationSuggestions(response.data.suggestions || []);
     } catch (error) {
-      console.error('Error fetching suggestions:', error);
-      return [];
+      console.error('❌ Error fetching optimization suggestions:', error);
     }
   };
 
   // Fetch historical data
   const fetchHistoricalData = async (hours = 24) => {
     try {
-      const response = await axios.get(`/api/analytics/history?hours=${hours}`);
-      setHistoricalData(response.data.history);
-      return response.data.history;
+      const response = await axios.get(`${API_BASE_URL}/api/analytics/history?hours=${hours}`);
+      setHistoricalData(response.data.history || []);
     } catch (error) {
-      console.error('Error fetching historical data:', error);
-      return [];
+      console.error('❌ Error fetching historical data:', error);
     }
   };
 
-  // Control device (simulated)
-  const controlDevice = async (sensorId, action) => {
+  // Fetch sensors
+  const fetchSensors = async () => {
     try {
-      // Simulate API call
-      console.log(`Controlling device ${sensorId}: ${action}`);
-      
-      // In a real implementation, this would call the backend API
-      return { success: true, message: `Device ${sensorId} ${action} successfully` };
+      const response = await axios.get(`${API_BASE_URL}/api/sensors`);
+      setRealTimeData(prev => ({
+        ...prev,
+        sensors: response.data.sensors || []
+      }));
     } catch (error) {
-      console.error('Error controlling device:', error);
-      return { success: false, message: 'Failed to control device' };
+      console.error('❌ Error fetching sensors:', error);
     }
   };
 
-  useEffect(() => {
-    const ws = connectWebSocket();
-    fetchInitialData();
+  // Control device
+  const controlDevice = async (deviceId, action) => {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/api/devices/${deviceId}/control`, {
+        action: action
+      });
+      return response.data;
+    } catch (error) {
+      console.error('❌ Error controlling device:', error);
+      throw error;
+    }
+  };
 
-    return () => {
-      if (ws) {
-        ws.close();
+  // Generate mock suggestions for demonstration
+  const generateMockSuggestions = (sensors) => {
+    const mockSuggestions = [
+      {
+        id: 1,
+        type: 'energy_optimization',
+        title: 'Optimize HVAC System',
+        description: 'Reduce temperature by 2°C during non-peak hours to save 15% energy',
+        impact: 'high',
+        savings: 150,
+        priority: 'high'
+      },
+      {
+        id: 2,
+        type: 'maintenance',
+        title: 'Schedule Motor Maintenance',
+        description: 'Motor efficiency has decreased by 8%. Schedule maintenance soon.',
+        impact: 'medium',
+        savings: 75,
+        priority: 'medium'
       }
-    };
-  }, []);
+    ];
+    return mockSuggestions;
+  };
 
-  const value = {
-    realTimeData,
+  // Calculate derived statistics
+  const derivedStats = {
+    ...realTimeData.stats,
+    totalSensors: realTimeData.sensors.length,
+    criticalSensors: realTimeData.sensors.filter(s => s.status === 'critical').length,
+    warningSensors: realTimeData.sensors.filter(s => s.status === 'warning').length,
+    normalSensors: realTimeData.sensors.filter(s => s.status === 'normal').length,
+    averageEfficiency: realTimeData.sensors.length > 0 
+      ? realTimeData.sensors.reduce((sum, sensor) => sum + (sensor.power_factor || 0.9), 0) / realTimeData.sensors.length 
+      : 0,
+    totalCost: (realTimeData.stats.total_energy_consumption || 0) * 0.12 // Assuming $0.12 per kWh
+  };
+
+  // Debug logging
+  useEffect(() => {
+    console.log('🔍 EnergyContext Debug:', {
+      isConnected,
+      loading,
+      statsCount: Object.keys(realTimeData.stats).length,
+      sensorsCount: realTimeData.sensors.length,
+      derivedStats: derivedStats
+    });
+  }, [isConnected, loading, realTimeData.stats, realTimeData.sensors, derivedStats]);
+
+  const contextValue = {
+    // Data
+    realTimeData: {
+      ...realTimeData,
+      stats: derivedStats
+    },
     optimizationSuggestions,
     historicalData,
     isConnected,
     loading,
-    fetchSensors,
+    consumerHost,
+    producerHost,
+    kafkaStatus,
+    producerStatus,
+    isProducerActive: producerStatus.is_active,
+    
+    // Actions
     fetchOptimizationSuggestions,
     fetchHistoricalData,
+    fetchSensors,
     controlDevice,
-    connectWebSocket
+    connectWebSocket,
   };
 
   return (
-    <EnergyContext.Provider value={value}>
+    <EnergyContext.Provider value={contextValue}>
       {children}
     </EnergyContext.Provider>
   );
 };
+
+export default EnergyContext;

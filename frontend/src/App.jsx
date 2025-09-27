@@ -6,6 +6,7 @@ import Optimization from './components/Optimization'
 import Navbar from './components/Navbar'
 import { EnergyProvider } from './context/EnergyContext'
 import './styles/App.css'
+import './styles/connection-states.css'
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard')
