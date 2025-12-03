@@ -25,7 +25,7 @@ A real-time **IoT-based Energy Monitoring System** built with React + TypeScript
 
 ### Backend (Node.js/Express)
 - RESTful API + WebSocket/MQTT support
-- MongoDB / PostgreSQL
+- MongoDB 
 - JWT authentication
 
 ## Project Structure
