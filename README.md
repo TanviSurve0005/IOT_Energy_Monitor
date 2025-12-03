@@ -1,49 +1,66 @@
 # IoT Energy Monitor
 
-A real-time **IoT-based Energy Monitoring System** that allows users to track energy consumption of connected devices, visualize usage patterns, set alerts, and manage devices through a modern web dashboard.
+A real-time **IoT-based Energy Monitoring System** built with React + TypeScript (Vite) on the frontend and a modular backend. Monitor energy consumption, visualize trends, manage devices, and receive alerts — all from a responsive web dashboard.
 
 ## Features
 
-- Real-time energy consumption monitoring
-- Interactive dashboards with charts (line, bar, pie)
-- Device management (view status, toggle on/off)
-- Threshold-based alerts & notifications
-- Historical data analysis (daily, weekly, monthly)
-- Responsive design – works on desktop and mobile
-- Secure user authentication
+- Real-time energy usage tracking via MQTT/WebSocket
+- Interactive dashboards with dynamic charts
+- Device management (view status, toggle control)
+- Customizable energy threshold alerts
+- Historical data visualization (daily, weekly, monthly)
+- Fully responsive UI (mobile + desktop)
+- Secure login & user session management
 
 ## Tech Stack
 
 ### Frontend
-- **React.js** + **TypeScript**
-- **Vite** (fast development & build tool)
-- **Material UI (MUI)** – for beautiful UI components
-- **Recharts** or **Chart.js** – data visualization
-- **React Router** – client-side routing
-- **Axios** – API communication
-- **Zustand** or **Context API** – state management
+- React 18 + TypeScript
+- Vite (blazing fast builds)
+- Material UI (MUI) + Tailwind CSS (optional)
+- Recharts / Chart.js for data visualization
+- Axios + React Query / TanStack Query
+- Zustand or Context API for state management
+- React Router v6 for routing
 
-### Backend (Separate or Integrated)
-- Node.js + Express
-- MongoDB 
+### Backend (Node.js/Express)
+- RESTful API + WebSocket/MQTT support
+- MongoDB / PostgreSQL
 - JWT authentication
-  
+
 ## Project Structure
+
+```plaintext
 IOT_Energy_Monitor/
 ├── frontend/
-│   ├── public/               # Static files
+│   ├── public/                  # Static assets (logo, favicon, etc.)
 │   ├── src/
-│   │   ├── components/       # Reusable UI components (Dashboard, Charts, DeviceCard, etc.)
-│   │   ├── pages/            # Route pages
-│   │   ├── services/         # API calls
-│   │   ├── hooks/            # Custom React hooks
-│   │   ├── context/          # Auth & global state
-│   │   ├── types/            # TypeScript interfaces
-│   │   ├── App.tsx
-│   │   └── main.tsx
+│   │   ├── components/          # Reusable UI components
+│   │   │   ├── Dashboard.tsx
+│   │   │   ├── EnergyChart.tsx
+│   │   │   ├── DeviceCard.tsx
+│   │   │   ├── AlertBanner.tsx
+│   │   │   ├── Header.tsx
+│   │   │   ├── Sidebar.tsx
+│   │   │   └── ...
+│   │   ├── pages/               # Page components (DashboardPage, LoginPage, etc.)
+│   │   ├── services/            # API calls & MQTT client
+│   │   ├── hooks/               # Custom React hooks
+│   │   ├── context/             # AuthContext, ThemeContext, etc.
+│   │   ├── types/               # TypeScript interfaces & types
+│   │   ├── App.tsx              # Main app with routing
+│   │   └── main.tsx             # Entry point
 │   ├── vite.config.ts
-│   └── package.json
-├── backend/                  
-├── docs/
+│   ├── package.json
+│   └── .env.example
+│
+├── backend/                     # (Create this folder for server)
+│   ├── controllers/
+│   ├── routes/
+│   ├── models/
+│   ├── middleware/
+│   └── server.js
+│
+├── docs/                        # Documentation, diagrams, API specs
 ├── README.md
 └── .gitignore
