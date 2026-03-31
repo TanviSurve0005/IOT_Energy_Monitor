@@ -126,13 +126,19 @@ def calculate_dashboard_stats() -> Dict[str, Any]:
     critical_sensors = len(df[df['status'] == 'critical'])
     warning_sensors = len(df[df['status'] == 'warning'])
     total_sensors = len(df)
-    anomaly_count = len(df[df['is_anomaly'] == True])
-    
-    # Calculate efficiency score (0-100)
-    critical_penalty = critical_sensors * 3
-    warning_penalty = warning_sensors * 1
-    anomaly_penalty = anomaly_count * 2
-    efficiency_score = max(0, 100 - critical_penalty - warning_penalty - anomaly_penalty)
+    normal_sensors = len(df[df['status'] == 'normal'])
+    anomaly_count = int(df['is_anomaly'].sum()) if 'is_anomaly' in df.columns else 0
+
+    # Efficiency score (0–100): weighted by device health status, then lightly
+    # reduced when many ML anomalies fire. This stays interpretable (not stuck at 0%
+    # when the fleet is partially healthy).
+    n = max(total_sensors, 1)
+    status_weighted = (
+        normal_sensors * 100.0 + warning_sensors * 68.0 + critical_sensors * 28.0
+    ) / n
+    anomaly_ratio = anomaly_count / n
+    efficiency_score = status_weighted * (1.0 - 0.45 * min(1.0, anomaly_ratio**0.85))
+    efficiency_score = max(0, min(100, round(efficiency_score, 1)))
     
     return {
         "total_energy": round(total_energy, 2),

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useEnergy } from '../context/EnergyContext';
+import { computeEfficiencyScore } from '../utils/efficiencyScore';
 import {
   Lightbulb,
   Zap,
@@ -143,6 +144,8 @@ const Optimization = () => {
   });
 
   const stats = realTimeData.stats || {};
+  const sensors = realTimeData.sensors || [];
+  const efficiencyScore = computeEfficiencyScore(stats, sensors);
   const totalPotentialSavings = optimizationSuggestions.reduce(
     (sum, suggestion) => sum + (suggestion.potential_savings || 0), 0
   );
@@ -208,7 +211,7 @@ const Optimization = () => {
           </div>
           <div className="overview-content">
             <h3>Efficiency Score</h3>
-            <div className="overview-value">{stats.efficiency_score?.toFixed(1) || 0}%</div>
+            <div className="overview-value">{Number(efficiencyScore).toFixed(1)}%</div>
             <div className="overview-subtitle">System performance</div>
           </div>
         </div>

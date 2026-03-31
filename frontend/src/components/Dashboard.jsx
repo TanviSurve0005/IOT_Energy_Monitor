@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import RealTimeChart from './RealTimeChart';
 import AnomalyMap from './AnomalyMap';
+import { computeEfficiencyScore } from '../utils/efficiencyScore';
 
 const StatCard = ({ icon: Icon, title, value, subtitle, trend, color = 'default' }) => (
   <div className={`stat-card ${color} fade-in`}>
@@ -62,12 +63,22 @@ const Dashboard = () => {
     }
   }, [realTimeData.sensors]);
 
-  const stats = realTimeData.stats || {};
+  const rawStats = realTimeData.stats || {};
+  const sensors = realTimeData.sensors || [];
+
+  const stats = {
+    ...rawStats,
+    total_energy: rawStats.total_energy ?? rawStats.total_energy_consumption ?? 0,
+    critical_sensors: rawStats.critical_sensors ?? sensors.filter(sensor => sensor.status === 'critical').length,
+    total_sensors: rawStats.total_sensors ?? sensors.length,
+    avg_temperature: rawStats.avg_temperature ?? rawStats.average_temperature ?? 0,
+    efficiency_score: computeEfficiencyScore(rawStats, sensors),
+  };
 
   return (
     <div className="dashboard">
       <div className="dashboard-header">
-        <h1>Smart Energy Monitoring Dashboard</h1>
+        <h1>EnergyIQ Monitoring Dashboard</h1>
         <p>Real-time factory energy consumption and safety monitoring</p>
         <div className="connection-badge">
           <div className={`status-dot ${isConnected ? 'connected' : 'disconnected'}`}></div>
@@ -105,7 +116,7 @@ const Dashboard = () => {
         <StatCard
           icon={TrendingUp}
           title="System Efficiency"
-          value={`${stats.efficiency_score || 0}%`}
+          value={`${Number(stats.efficiency_score || 0).toFixed(2)}%`}
           subtitle="Overall performance"
           color="purple"
         />
@@ -113,7 +124,7 @@ const Dashboard = () => {
         <StatCard
           icon={Thermometer}
           title="Average Temperature"
-          value={`${stats.avg_temperature || 0}°C`}
+          value={`${Number(stats.avg_temperature || 0).toFixed(2)}°C`}
           subtitle="Across all devices"
           color="orange"
         />

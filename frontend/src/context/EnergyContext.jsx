@@ -213,6 +213,34 @@ export const EnergyProvider = ({ children }) => {
     };
   }, []);
 
+  // Keep stats, sensors, and optimization suggestions aligned with Redis even if WebSocket
+  // payloads are sparse or the page loaded before data existed.
+  useEffect(() => {
+    const syncFromApi = async () => {
+      try {
+        const [statsRes, sensorsRes, suggestionsRes] = await Promise.all([
+          axios.get('/api/dashboard/stats'),
+          axios.get('/api/sensors?limit=500'),
+          axios.get('/api/optimization/suggestions'),
+        ]);
+        setRealTimeData((prev) => ({
+          ...prev,
+          stats: { ...prev.stats, ...statsRes.data },
+          sensors: sensorsRes.data.sensors || prev.sensors,
+        }));
+        if (suggestionsRes.data?.suggestions) {
+          setOptimizationSuggestions(suggestionsRes.data.suggestions);
+        }
+      } catch (e) {
+        console.error('API sync failed:', e);
+      }
+    };
+
+    syncFromApi();
+    const id = setInterval(syncFromApi, 8000);
+    return () => clearInterval(id);
+  }, []);
+
   const value = {
     realTimeData,
     optimizationSuggestions,

@@ -77,6 +77,9 @@ class EnergyOptimizer:
         
         for _, sensor in high_risk.iterrows():
             risk_factor = sensor['failure_probability']
+            hourly_energy = float(sensor.get('energy_consumption', 0) or 0)
+            # Rough $/h avoided by fixing inefficient / failing equipment
+            potential_savings = round(max(0.5, risk_factor * hourly_energy * self.energy_rates['on_peak']), 2)
             suggestions.append({
                 'type': 'predictive_maintenance',
                 'sensor_id': sensor['sensor_id'],
@@ -85,6 +88,7 @@ class EnergyOptimizer:
                 'title': 'Schedule Preventive Maintenance',
                 'description': 'High failure probability detected - recommend immediate inspection',
                 'risk_score': round(risk_factor, 3),
+                'potential_savings': potential_savings,
                 'urgency': 'critical' if risk_factor > 0.85 else 'high',
                 'factors': self._identify_risk_factors(sensor),
                 'priority': 'critical',
@@ -101,6 +105,8 @@ class EnergyOptimizer:
         
         for _, sensor in inefficient.iterrows():
             efficiency_ratio = sensor['energy_consumption'] / avg_consumption
+            excess_kwh = max(0, float(sensor['energy_consumption']) - float(avg_consumption))
+            potential_savings = round(max(0.5, excess_kwh * self.energy_rates['shoulder']), 2)
             suggestions.append({
                 'type': 'energy_efficiency',
                 'sensor_id': sensor['sensor_id'],
@@ -111,6 +117,7 @@ class EnergyOptimizer:
                 'current_consumption': round(sensor['energy_consumption'], 2),
                 'average_consumption': round(avg_consumption, 2),
                 'efficiency_ratio': round(efficiency_ratio, 2),
+                'potential_savings': potential_savings,
                 'priority': 'medium',
                 'action': 'efficiency_audit',
                 'icon': '⚡'
