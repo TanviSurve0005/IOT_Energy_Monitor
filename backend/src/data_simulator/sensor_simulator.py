@@ -18,9 +18,9 @@ class SensorSimulator:
             kafka_broker = f"{producer_ip}:9092"
         
         self.kafka_broker = kafka_broker
+        self.total_sensors = 300  # Fixed number of active sensors - MUST be set before _initialize_sensors()
         self.producer = self._initialize_kafka_producer()
         self.sensors = self._initialize_sensors()
-        self.total_sensors = 300  # Fixed number of active sensors
         logger.info(f"Initialized {len(self.sensors)} sensors on Kafka broker: {kafka_broker}")
     
     def _get_local_ip(self):

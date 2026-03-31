@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import io from 'socket.io-client';
 
 const EnergyContext = createContext();
 
@@ -40,7 +39,7 @@ export const EnergyProvider = ({ children }) => {
   const isConnectingRef = useRef(false);
 
   // API base URL - points to consumer laptop's API
-  const API_BASE_URL = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000`;
+  const API_BASE_URL = import.meta.env.VITE_API_URL || `http://192.168.137.16:8000`;
 
   // WebSocket connection for real-time updates
   const connectWebSocket = () => {
@@ -64,7 +63,7 @@ export const EnergyProvider = ({ children }) => {
       wsRef.current = socket;
 
       socket.onopen = () => {
-        console.log('✅ Connected to consumer API via WebSocket');
+        console.log('✅ Connected to consumer API via WebSocket at:', wsUrl);
         setIsConnected(true);
         isConnectingRef.current = false;
         setLoading(false);
@@ -74,8 +73,15 @@ export const EnergyProvider = ({ children }) => {
         try {
           const message = JSON.parse(event.data);
           
+          console.log('📩 WebSocket message received:', message.type, {
+            sensorCount: message.sensors?.length || 0,
+            stats: message.stats,
+            producerStatus: message.producer_status
+          });
+          
           switch (message.type) {
             case 'initial_data':
+              console.log('✅ Setting initial data with', message.sensors?.length || 0, 'sensors');
               setRealTimeData(prev => ({
                 ...prev,
                 stats: message.stats || {},
@@ -89,6 +95,7 @@ export const EnergyProvider = ({ children }) => {
               break;
               
             case 'realtime_update':
+              console.log('🔄 Updating real-time data with', message.sensors?.length || 0, 'sensors');
               setRealTimeData(prev => ({
                 ...prev,
                 stats: message.stats || {},
@@ -163,8 +170,11 @@ export const EnergyProvider = ({ children }) => {
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
+        console.log('🔄 Fetching initial data from:', API_BASE_URL);
+        
         // Fetch dashboard stats
         const statsResponse = await axios.get(`${API_BASE_URL}/api/dashboard/stats`);
+        console.log('📊 Stats response:', statsResponse.data);
         setRealTimeData(prev => ({
           ...prev,
           stats: statsResponse.data
@@ -172,6 +182,7 @@ export const EnergyProvider = ({ children }) => {
 
         // Fetch sensors
         const sensorsResponse = await axios.get(`${API_BASE_URL}/api/sensors`);
+        console.log('🔌 Sensors response:', sensorsResponse.data);
         setRealTimeData(prev => ({
           ...prev,
           sensors: sensorsResponse.data.sensors || []
@@ -184,6 +195,7 @@ export const EnergyProvider = ({ children }) => {
         console.log('✅ Successfully connected to API and fetched initial data');
       } catch (error) {
         console.error('❌ Error fetching initial data:', error);
+        console.error('❌ API URL:', API_BASE_URL);
         setIsConnected(false);
         setLoading(false);
       }
@@ -276,7 +288,8 @@ export const EnergyProvider = ({ children }) => {
   const fetchHistoricalData = async (hours = 24) => {
     try {
       const response = await axios.get(`${API_BASE_URL}/api/analytics/history?hours=${hours}`);
-      setHistoricalData(response.data.history || []);
+      console.log('📥 Historical data fetched:', response.data.data?.length || 0, 'points');
+      setHistoricalData(response.data.data || []);
     } catch (error) {
       console.error('❌ Error fetching historical data:', error);
     }
@@ -308,30 +321,6 @@ export const EnergyProvider = ({ children }) => {
     }
   };
 
-  // Generate mock suggestions for demonstration
-  const generateMockSuggestions = (sensors) => {
-    const mockSuggestions = [
-      {
-        id: 1,
-        type: 'energy_optimization',
-        title: 'Optimize HVAC System',
-        description: 'Reduce temperature by 2°C during non-peak hours to save 15% energy',
-        impact: 'high',
-        savings: 150,
-        priority: 'high'
-      },
-      {
-        id: 2,
-        type: 'maintenance',
-        title: 'Schedule Motor Maintenance',
-        description: 'Motor efficiency has decreased by 8%. Schedule maintenance soon.',
-        impact: 'medium',
-        savings: 75,
-        priority: 'medium'
-      }
-    ];
-    return mockSuggestions;
-  };
 
   // Calculate derived statistics
   const derivedStats = {
@@ -343,7 +332,16 @@ export const EnergyProvider = ({ children }) => {
     averageEfficiency: realTimeData.sensors.length > 0 
       ? realTimeData.sensors.reduce((sum, sensor) => sum + (sensor.power_factor || 0.9), 0) / realTimeData.sensors.length 
       : 0,
-    totalCost: (realTimeData.stats.total_energy_consumption || 0) * 0.12 // Assuming $0.12 per kWh
+    totalCost: (realTimeData.stats.total_energy_consumption || 0) * 0.12, // Assuming $0.12 per kWh
+    // Map API field names to frontend expectations
+    total_energy: realTimeData.stats.total_energy_consumption || 0,
+    critical_sensors: realTimeData.stats.status_critical || 0,
+    total_sensors: realTimeData.stats.total_readings || 0,
+    efficiency_score: realTimeData.sensors.length > 0 
+      ? Math.round((1 - (realTimeData.stats.anomaly_count || 0) / (realTimeData.stats.total_readings || 1)) * 100)
+      : 0,
+    avg_temperature: realTimeData.stats.average_consumption || 0,
+    total_power: realTimeData.stats.average_consumption || 0
   };
 
   // Debug logging
@@ -391,3 +389,4 @@ export const EnergyProvider = ({ children }) => {
 };
 
 export default EnergyContext;
+

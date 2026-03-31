@@ -54,7 +54,7 @@ const SuggestionCard = ({ suggestion, onApply }) => {
         <div className="suggestion-details">
           <div className="detail-item">
             <Zap size={14} />
-            <span>Device: {sensor_id}</span>
+            <span>Device: {suggestion.sensor_id}</span>
           </div>
           <div className="detail-item">
             <Settings size={14} />
@@ -186,7 +186,7 @@ const Optimization = () => {
           </div>
           <div className="overview-content">
             <h3>Current Consumption</h3>
-            <div className="overview-value">{stats.total_energy?.toFixed(1) || 0} kWh</div>
+            <div className="overview-value">{(stats.total_energy_consumption || 0).toFixed(1)} kWh</div>
             <div className="overview-subtitle">Real-time usage</div>
           </div>
         </div>
@@ -207,9 +207,9 @@ const Optimization = () => {
             <TrendingUp size={24} />
           </div>
           <div className="overview-content">
-            <h3>Efficiency Score</h3>
-            <div className="overview-value">{stats.efficiency_score?.toFixed(1) || 0}%</div>
-            <div className="overview-subtitle">System performance</div>
+            <h3>Applied Optimizations</h3>
+            <div className="overview-value">{appliedSuggestions.length}</div>
+            <div className="overview-subtitle">Active improvements</div>
           </div>
         </div>
 
@@ -218,9 +218,9 @@ const Optimization = () => {
             <CheckCircle size={24} />
           </div>
           <div className="overview-content">
-            <h3>Applied Optimizations</h3>
-            <div className="overview-value">{appliedSuggestions.length}</div>
-            <div className="overview-subtitle">Active improvements</div>
+            <h3>Efficiency Score</h3>
+            <div className="overview-value">{(100 - ((stats.anomaly_count || 0) / (stats.total_readings || 1) * 100)).toFixed(1)}%</div>
+            <div className="overview-subtitle">Overall performance</div>
           </div>
         </div>
       </div>

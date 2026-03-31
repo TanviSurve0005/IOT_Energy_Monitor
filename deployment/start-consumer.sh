@@ -1,29 +1,22 @@
 #!/bin/bash
-# Consumer Startup Script for Linux/Mac
-# This script sets the environment variables and starts the consumer services
 
-echo "Setting up Consumer Environment..."
+# Get producer IP from user or environment
+PRODUCER_IP=${1:-$PRODUCER_IP}
+if [ -z "$PRODUCER_IP" ]; then
+    read -p "Enter Producer Laptop IP address: " PRODUCER_IP
+fi
 
-# Set Producer IP (where Kafka is running)
-export PRODUCER_IP=192.168.137.195
+# Get consumer IP
+HOST_IP=$(hostname -I | awk '{print $1}')
+echo "Starting Consumer on IP: $HOST_IP, connecting to Producer: $PRODUCER_IP"
 
-# Get Consumer IP (this machine's IP)
-export HOST_IP=$(hostname -I | awk '{print $1}')
+# Export environment variables
+export PRODUCER_IP=$PRODUCER_IP
+export HOST_IP=$HOST_IP
 
-echo "Producer IP: $PRODUCER_IP"
-echo "Consumer IP: $HOST_IP"
+# Start consumer services
+docker-compose -f docker-compose-consumer.yml up -d
 
-# Update the consumer.env file with the detected IP
-cat > consumer.env << EOF
-# Consumer Environment Configuration
-# Set these values before running docker-compose
-
-# Producer IP (where Kafka is running)
-PRODUCER_IP=$PRODUCER_IP
-
-# Consumer IP (this machine's IP)
-HOST_IP=$HOST_IP
-EOF
-
-echo "Starting Consumer Services..."
-docker-compose -f docker-compose-consumer.yml up --build
+echo "Consumer started successfully!"
+echo "Frontend available at: http://$HOST_IP:3000"
+echo "API available at: http://$HOST_IP:8000"

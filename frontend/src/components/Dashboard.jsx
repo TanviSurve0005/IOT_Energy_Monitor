@@ -60,7 +60,9 @@ const Dashboard = () => {
       isProducerActive,
       realTimeData,
       stats: realTimeData.stats,
-      sensorsCount: realTimeData.sensors?.length || 0
+      sensorsCount: realTimeData.sensors?.length || 0,
+      hasSensors: realTimeData.sensors && realTimeData.sensors.length > 0,
+      sampleSensor: realTimeData.sensors?.[0]
     });
   }, [isConnected, isProducerActive, realTimeData]);
 
@@ -120,7 +122,7 @@ const Dashboard = () => {
         <StatCard
           icon={Zap}
           title="Total Energy Consumption"
-          value={shouldShowData ? `${stats.total_energy || 0} kWh` : '--'}
+          value={shouldShowData ? `${stats.total_energy_consumption || 0} kWh` : '--'}
           subtitle={shouldShowData ? "Current hour" : "No data available"}
           trend={shouldShowData ? 2.3 : null}
           color={shouldShowData ? "blue" : "disabled"}
@@ -129,7 +131,7 @@ const Dashboard = () => {
         <StatCard
           icon={AlertTriangle}
           title="Critical Alerts"
-          value={shouldShowData ? (stats.critical_sensors || 0) : '--'}
+          value={shouldShowData ? (stats.status_critical || 0) : '--'}
           subtitle={shouldShowData ? "Requiring immediate attention" : "No data available"}
           color={shouldShowData ? "critical" : "disabled"}
         />
@@ -137,7 +139,7 @@ const Dashboard = () => {
         <StatCard
           icon={Activity}
           title="Active Sensors"
-          value={shouldShowData ? (stats.total_sensors || 0) : '--'}
+          value={shouldShowData ? (stats.total_readings || 0) : '--'}
           subtitle={shouldShowData ? "Online devices" : "No data available"}
           color={shouldShowData ? "green" : "disabled"}
         />
@@ -145,7 +147,7 @@ const Dashboard = () => {
         <StatCard
           icon={TrendingUp}
           title="System Efficiency"
-          value={shouldShowData ? `${stats.efficiency_score || 0}%` : '--'}
+          value={shouldShowData ? `${Math.round((1 - (stats.anomaly_count || 0) / (stats.total_readings || 1)) * 100)}%` : '--'}
           subtitle={shouldShowData ? "Overall performance" : "No data available"}
           color={shouldShowData ? "purple" : "disabled"}
         />
@@ -153,7 +155,7 @@ const Dashboard = () => {
         <StatCard
           icon={Thermometer}
           title="Average Temperature"
-          value={shouldShowData ? `${stats.avg_temperature || 0}°C` : '--'}
+          value={shouldShowData ? `${stats.average_consumption || 0}°C` : '--'}
           subtitle={shouldShowData ? "Across all devices" : "No data available"}
           color={shouldShowData ? "orange" : "disabled"}
         />
@@ -161,7 +163,7 @@ const Dashboard = () => {
         <StatCard
           icon={DollarSign}
           title="Hourly Cost"
-          value={shouldShowData ? `$${((stats.total_energy || 0) * 0.12).toFixed(2)}` : '--'}
+          value={shouldShowData ? `$${((stats.total_energy_consumption || 0) * 0.12).toFixed(2)}` : '--'}
           subtitle={shouldShowData ? "Based on current usage" : "No data available"}
           color={shouldShowData ? "green" : "disabled"}
         />
@@ -298,7 +300,7 @@ const Dashboard = () => {
               
               <div className="quick-stat">
                 <div className="quick-stat-label">Avg Power</div>
-                <div className="quick-stat-value">{shouldShowData ? (stats.total_power || 0) + 'A' : '--'}</div>
+                <div className="quick-stat-value">{shouldShowData ? (stats.average_consumption || 0) + 'A' : '--'}</div>
               </div>
             </div>
           </div>

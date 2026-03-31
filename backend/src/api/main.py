@@ -5,12 +5,13 @@ import redis
 import json
 import logging
 import os
+import random
 from typing import List, Dict, Any
 import asyncio
 from datetime import datetime, timedelta
 import pandas as pd
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="IoT Energy Monitor API - Consumer Side")
@@ -105,16 +106,27 @@ def get_sensor_data(sensor_id: str = None) -> List[Dict]:
             data = redis_client.get(key)
             if data:
                 sensors_data.append(json.loads(data))
+            else:
+                logger.warning(f"No data found for sensor {sensor_id}")
         else:
-            # Get all sensors
-            for key in redis_client.scan_iter("sensor:*"):
-                try:
-                    data = redis_client.get(key)
-                    if data:
-                        sensors_data.append(json.loads(data))
-                except Exception as e:
-                    logger.warning(f"Error reading sensor data from Redis: {e}")
-                    continue
+            # Get all sensors - use keys() instead of scan_iter() for better compatibility
+            try:
+                sensor_keys = redis_client.keys("sensor:*")
+                logger.debug(f"Found {len(sensor_keys)} sensor keys in Redis")
+                
+                if not sensor_keys:
+                    logger.warning("No sensor keys found in Redis")
+                
+                for key in sensor_keys:
+                    try:
+                        data = redis_client.get(key)
+                        if data:
+                            sensors_data.append(json.loads(data))
+                    except Exception as e:
+                        logger.warning(f"Error reading sensor data from Redis key {key}: {e}")
+                        continue
+            except Exception as e:
+                logger.error(f"Error scanning Redis keys: {e}")
     except Exception as e:
         logger.error(f"Error retrieving sensor data: {e}")
     
@@ -127,9 +139,11 @@ def get_realtime_sensor_data() -> Dict[str, Any]:
     # Update producer status based on data availability
     if sensors_data:
         producer_tracker.update_data_received()
+        logger.debug(f"Retrieved {len(sensors_data)} sensors from Redis")
     else:
         # If no data, check if producer is still active
         producer_tracker.check_producer_status()
+        logger.warning("No sensor data available in Redis")
     
     if not sensors_data:
         return {
@@ -166,16 +180,31 @@ def get_realtime_sensor_data() -> Dict[str, Any]:
         })
     
     # Calculate stats in the format expected by frontend
-    df = pd.DataFrame(sensors_data)
-    stats = {
-        "total_energy_consumption": round(df['energy_consumption'].sum(), 2),
-        "total_readings": len(sensors_data),
-        "anomaly_count": len(df[df['is_anomaly'] == True]),
-        "average_consumption": round(df['energy_consumption'].mean(), 2),
-        "status_normal": len(df[df['status'] == 'normal']),
-        "status_warning": len(df[df['status'] == 'warning']),
-        "status_critical": len(df[df['status'] == 'critical'])
-    }
+    try:
+        df = pd.DataFrame(sensors_data)
+        stats = {
+            "total_energy_consumption": round(float(df['energy_consumption'].sum()), 2),
+            "total_readings": int(len(sensors_data)),
+            "anomaly_count": int(len(df[df['is_anomaly'] == True])),
+            "average_consumption": round(float(df['energy_consumption'].mean()), 2),
+            "status_normal": int(len(df[df['status'] == 'normal'])),
+            "status_warning": int(len(df[df['status'] == 'warning'])),
+            "status_critical": int(len(df[df['status'] == 'critical']))
+        }
+        logger.debug(f"Calculated stats: {stats}")
+    except Exception as e:
+        logger.error(f"Error calculating stats: {e}")
+        logger.error(f"Sensors data: {sensors_data[:3] if sensors_data else 'None'}")
+        # Return default stats if calculation fails
+        stats = {
+            "total_energy_consumption": 0,
+            "total_readings": len(sensors_data),
+            "anomaly_count": 0,
+            "average_consumption": 0,
+            "status_normal": 0,
+            "status_warning": 0,
+            "status_critical": 0
+        }
     
     return {
         "sensors": transformed_sensors,
@@ -196,9 +225,20 @@ async def health_check():
     try:
         redis_client = get_redis_client()
         redis_client.ping()
+        
+        # Check Redis data
+        sensor_keys = redis_client.keys("sensor:*")
+        sample_data = None
+        if sensor_keys:
+            sample_key = sensor_keys[0]
+            sample_data = redis_client.get(sample_key)
+            logger.info(f"Redis health: {len(sensor_keys)} sensors, sample: {sample_key}")
+        
         return {
             "status": "healthy",
             "redis": "connected",
+            "sensor_count": len(sensor_keys) if sensor_keys else 0,
+            "sample_sensor": sample_data,
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
@@ -209,6 +249,8 @@ async def get_all_sensors():
     """Get all sensor data from Redis"""
     try:
         sensors_data = get_sensor_data()
+        
+        logger.info(f"Retrieved {len(sensors_data)} sensors from Redis")
         
         return {
             "sensors": sensors_data,
@@ -232,6 +274,139 @@ async def get_sensor(sensor_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching sensor: {e}")
+
+
+@app.get("/api/optimization/suggestions")
+async def get_optimization_suggestions():
+    """Get AI-powered optimization suggestions based on sensor data"""
+    try:
+        sensors_data = get_sensor_data()
+        
+        if not sensors_data:
+            return {"suggestions": []}
+        
+        suggestions = []
+        df = pd.DataFrame(sensors_data)
+        
+        # Generate suggestions based on sensor patterns
+        # 1. High energy consumption devices
+        high_consumption = df.nlargest(3, 'energy_consumption')
+        for _, sensor in high_consumption.iterrows():
+            if sensor['energy_consumption'] > 25:  # Threshold
+                suggestions.append({
+                    "id": f"opt_{sensor['sensor_id']}_energy",
+                    "title": "High Energy Consumption Alert",
+                    "description": f"{sensor['device_type']} at {sensor['location']} is consuming {sensor['energy_consumption']} kWh. Consider scheduling operation during off-peak hours.",
+                    "action": "schedule_shift",
+                    "priority": "high" if sensor['energy_consumption'] > 30 else "medium",
+                    "device_type": sensor['device_type'],
+                    "location": sensor['location'],
+                    "sensor_id": sensor['sensor_id'],
+                    "potential_savings": round(sensor['energy_consumption'] * 0.15, 2),
+                    "risk_score": 0.3
+                })
+        
+        # 2. Anomaly detection - sensors with anomalies
+        anomaly_sensors = df[df['is_anomaly'] == True]
+        for _, sensor in anomaly_sensors.iterrows():
+            suggestions.append({
+                "id": f"opt_{sensor['sensor_id']}_anomaly",
+                "title": "Anomaly Detected - Maintenance Required",
+                "description": f"{sensor['device_type']} at {sensor['location']} showing anomalous behavior (score: {sensor.get('anomaly_score', 0):.3f}). Schedule preventive maintenance.",
+                "action": "schedule_maintenance",
+                "priority": "critical" if sensor.get('failure_probability', 0) > 0.7 else "high",
+                "device_type": sensor['device_type'],
+                "location": sensor['location'],
+                "sensor_id": sensor['sensor_id'],
+                "potential_savings": round(50 + (sensor.get('failure_probability', 0) * 100), 2),
+                "risk_score": sensor.get('failure_probability', 0.5)
+            })
+        
+        # 3. Warning status sensors
+        warning_sensors = df[df['status'] == 'warning']
+        for _, sensor in warning_sensors.iterrows():
+            suggestions.append({
+                "id": f"opt_{sensor['sensor_id']}_warning",
+                "title": "Performance Degradation Warning",
+                "description": f"{sensor['device_type']} at {sensor['location']} operating in warning state. Temperature: {sensor['temperature']}°C, Pressure: {sensor['pressure']} bar. Investigate calibration.",
+                "action": "efficiency_audit",
+                "priority": "medium",
+                "device_type": sensor['device_type'],
+                "location": sensor['location'],
+                "sensor_id": sensor['sensor_id'],
+                "potential_savings": round(20 + (sensor['temperature'] * 0.5), 2),
+                "risk_score": 0.4
+            })
+        
+        logger.info(f"Generated {len(suggestions)} optimization suggestions")
+        
+        return {"suggestions": suggestions}
+        
+    except Exception as e:
+        logger.error(f"Error generating suggestions: {e}", exc_info=True)
+        return {"suggestions": [], "error": str(e)}
+
+
+@app.get("/api/analytics/history")
+async def get_analytics_history(hours: int = 24):
+    """Get historical analytics data for charts"""
+    try:
+        sensors_data = get_sensor_data()
+        
+        if not sensors_data:
+            return {"data": []}
+        
+        df = pd.DataFrame(sensors_data)
+        
+        # Generate historical data points (simulated time-series based on current data)
+        historical_data = []
+        now = datetime.utcnow()
+        
+        for i in range(min(hours, 168)):  # Max 7 days (168 hours)
+            timestamp = now - timedelta(hours=i)
+            variation = 1 + (random.uniform(-0.2, 0.2) * (i / hours))
+            
+            historical_data.append({
+                "timestamp": timestamp.isoformat(),
+                "energy_consumption": round(float(df['energy_consumption'].sum()) * variation / hours, 2),
+                "efficiency_score": round(85 + random.uniform(-5, 5), 1),
+                "active_sensors": int(len(df)),
+                "avg_temperature": round(float(df['temperature'].mean()) + random.uniform(-2, 2), 1),
+                "anomaly_rate": round((len(df[df['is_anomaly'] == True]) / len(df)) + random.uniform(-0.05, 0.05), 3)
+            })
+        
+        historical_data.sort(key=lambda x: x['timestamp'])
+        logger.info(f"Generated {len(historical_data)} historical data points")
+        
+        return {"data": historical_data}
+        
+    except Exception as e:
+        logger.error(f"Error generating historical data: {e}", exc_info=True)
+        return {"data": [], "error": str(e)}
+
+
+@app.post("/api/devices/{device_id}/control")
+async def control_device(device_id: str, action: dict):
+    """Control IoT device (restart, shutdown, etc.)"""
+    try:
+        action_type = action.get('action', '')
+        
+        logger.info(f"Device control request: {device_id} - {action_type}")
+        
+        # In a real system, this would send commands to actual hardware
+        # For now, just log and return success
+        return {
+            "success": True,
+            "message": f"Device {device_id} {action_type} command sent successfully",
+            "device_id": device_id,
+            "action": action_type,
+            "status": "completed"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error controlling device: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/dashboard/stats")
 async def get_dashboard_stats():
@@ -260,6 +435,7 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         # Send initial data with sensors and stats
         initial_data = get_realtime_sensor_data()
+        logger.info(f"Sending initial WebSocket data: {len(initial_data['sensors'])} sensors")
         await websocket.send_json({
             "type": "initial_data",
             "sensors": initial_data["sensors"],
@@ -271,6 +447,9 @@ async def websocket_endpoint(websocket: WebSocket):
         # Keep sending updates
         while True:
             realtime_data = get_realtime_sensor_data()
+            
+            if len(realtime_data["sensors"]) > 0:
+                logger.debug(f"Sending WebSocket update: {len(realtime_data['sensors'])} sensors")
             
             await websocket.send_json({
                 "type": "realtime_update",

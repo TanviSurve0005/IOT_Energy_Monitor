@@ -20,8 +20,8 @@ def start_backend():
     processor_thread.start()
     
     # Start FastAPI server
-    print("Starting FastAPI server on http://0.0.0.0:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    print("Starting FastAPI server on http://0.0.0.0:8888")
+    uvicorn.run(app, host="0.0.0.0", port=8888, log_level="info")
 
 if __name__ == "__main__":
     start_backend()

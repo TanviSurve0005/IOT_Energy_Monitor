@@ -1,6 +1,7 @@
 import json
 import random
 import os
+import time
 from kafka import KafkaConsumer
 import numpy as np
 from sklearn.ensemble import IsolationForest
@@ -8,6 +9,19 @@ from sklearn.preprocessing import StandardScaler
 import redis
 import logging
 from datetime import datetime
+
+class NumpyEncoder(json.JSONEncoder):
+    """Custom JSON encoder to handle NumPy types"""
+    def default(self, obj):
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -44,19 +58,41 @@ class StreamProcessor:
                     'sensor-data',
                     bootstrap_servers=[self.kafka_broker],
                     value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-                    auto_offset_reset='latest',  # Start from latest messages
-                    group_id='energy-monitor-consumer-group',
+                    auto_offset_reset='latest',  # Start from latest to get real-time data
+                    group_id='energy-monitor-consumer-group-2',  # Changed to new group to reset offsets
                     enable_auto_commit=True,
-                    consumer_timeout_ms=10000,  # Timeout after 10 seconds of no messages
-                    max_poll_records=50,  # Process in smaller batches
+                    consumer_timeout_ms=5000,  # Timeout for polling
+                    max_poll_records=100,  # Process in batches
                     api_version=(0, 10, 1),  # Specify API version for compatibility
-                    security_protocol='PLAINTEXT'  # Explicitly set security protocol
+                    security_protocol='PLAINTEXT',  # Explicitly set security protocol
+                    session_timeout_ms=30000,  # Keep session alive longer
+                    heartbeat_interval_ms=10000,  # More frequent heartbeats
+                    request_timeout_ms=60000,  # Increased timeout
+                    max_poll_interval_ms=300000  # Max interval between polls
                 )
+                
+                # Force a metadata refresh and log topic info
+                topics = consumer.topics()
+                logger.info(f"Available Kafka topics: {topics}")
+                
+                partitions = consumer.partitions_for_topic('sensor-data')
+                logger.info(f"Partitions for 'sensor-data': {partitions}")
+                
+                # Subscribe to topic and wait for assignment
+                consumer.subscribe(['sensor-data'])
+                logger.info(f"Subscribed to 'sensor-data' topic")
+                
+                # Wait for partition assignment
+                time.sleep(2)
+                
+                assignment = consumer.assignment()
+                logger.info(f"Partition assignment: {assignment}")
+                
                 logger.info(f"Successfully connected to Kafka consumer at {self.kafka_broker}")
                 return consumer
             except Exception as e:
                 attempts += 1
-                logger.warning(f"Attempt {attempts}/{max_attempts}: Failed to connect to Kafka at {self.kafka_broker}: {e}")
+                logger.warning(f"Attempt {attempts}/{max_attempts}: Failed to connect to Kafka at {self.kafka_broker}: {e}", exc_info=True)
                 if attempts >= max_attempts:
                     raise Exception(f"Failed to connect to Kafka after {max_attempts} attempts")
                 time.sleep(2)
@@ -95,42 +131,84 @@ class StreamProcessor:
     def process_stream(self):
         logger.info("Starting to process sensor data stream...")
         processed_count = 0
+        empty_polls = 0
+        max_empty_polls = 100  # Allow some empty polls before warning
         
-        for message in self.consumer:
+        try:
+            while True:
+                try:
+                    # Poll for messages with longer timeout
+                    messages = self.consumer.poll(timeout_ms=10000, max_records=100)
+                    
+                    if not messages:
+                        empty_polls += 1
+                        if empty_polls % 10 == 0:
+                            logger.info(f"No messages received ({empty_polls} empty polls). Waiting for data...")
+                            # Check if we're still connected
+                            try:
+                                topics = self.consumer.topics()
+                                logger.debug(f"Still connected. Available topics: {topics}")
+                            except Exception as check_error:
+                                logger.warning(f"Connection check failed: {check_error}")
+                        continue
+                    
+                    empty_polls = 0  # Reset counter on successful message receipt
+                    
+                    for topic_partition, records in messages.items():
+                        for message in records:
+                            try:
+                                data = message.value
+                                processed_count += 1
+                                
+                                logger.info(f"Processing message {processed_count} from sensor {data.get('sensor_id', 'unknown')} (offset: {message.offset})")
+                                
+                                features = np.array([[data['current'], data['temperature'], data['pressure']]])
+                                
+                                if processed_count == 1:
+                                    self.scaler.partial_fit(features)
+                                features_scaled = self.scaler.transform(features)
+                                
+                                is_anomaly = bool(self.anomaly_model.predict(features_scaled)[0] == -1)
+                                anomaly_score = float(self.anomaly_model.decision_function(features_scaled)[0])
+                                
+                                failure_prob = self._calculate_failure_probability(data, is_anomaly, anomaly_score)
+                                
+                                data.update({
+                                    'is_anomaly': is_anomaly,
+                                    'anomaly_score': round(anomaly_score, 4),
+                                    'failure_probability': round(failure_prob, 3),
+                                    'processed_at': datetime.utcnow().isoformat(),
+                                    'data_quality_score': round(random.uniform(0.85, 0.99), 2)
+                                })
+                                
+                                self._store_sensor_data(data, processed_count)
+                                
+                                if processed_count % 100 == 0:
+                                    logger.info(f"Processed {processed_count} sensor messages")
+                                    
+                                if is_anomaly:
+                                    logger.warning(f"Anomaly detected: {data['sensor_id']} - Score: {anomaly_score:.3f}")
+                                    
+                            except Exception as e:
+                                logger.error(f"Error processing message: {e}", exc_info=True)
+                                continue
+                                
+                except Exception as poll_error:
+                    logger.error(f"Poll error: {poll_error}", exc_info=True)
+                    time.sleep(2)
+                    continue
+                    
+        except KeyboardInterrupt:
+            logger.info("Stream processor stopped by user")
+        except Exception as e:
+            logger.error(f"Stream processor crashed: {e}", exc_info=True)
+            raise
+        finally:
             try:
-                data = message.value
-                processed_count += 1
-                
-                features = np.array([[data['current'], data['temperature'], data['pressure']]])
-                
-                if processed_count == 1:
-                    self.scaler.partial_fit(features)
-                features_scaled = self.scaler.transform(features)
-                
-                is_anomaly = self.anomaly_model.predict(features_scaled)[0] == -1
-                anomaly_score = float(self.anomaly_model.decision_function(features_scaled)[0])
-                
-                failure_prob = self._calculate_failure_probability(data, is_anomaly, anomaly_score)
-                
-                data.update({
-                    'is_anomaly': is_anomaly,
-                    'anomaly_score': round(anomaly_score, 4),
-                    'failure_probability': round(failure_prob, 3),
-                    'processed_at': datetime.utcnow().isoformat(),
-                    'data_quality_score': round(random.uniform(0.85, 0.99), 2)  # FIXED: random is now imported
-                })
-                
-                self._store_sensor_data(data)
-                
-                if processed_count % 100 == 0:
-                    logger.info(f"Processed {processed_count} sensor messages")
-                    
-                if is_anomaly:
-                    logger.warning(f"Anomaly detected: {data['sensor_id']} - Score: {anomaly_score:.3f}")
-                    
-            except Exception as e:
-                logger.error(f"Error processing message: {e}")
-                continue
+                self.consumer.close()
+                logger.info("Kafka consumer closed")
+            except:
+                pass
     
     def _calculate_failure_probability(self, data, is_anomaly, anomaly_score):
         base_score = 0.0
@@ -155,9 +233,9 @@ class StreamProcessor:
         
         return min(base_score, 1.0)
     
-    def _store_sensor_data(self, data):
+    def _store_sensor_data(self, data, processed_count=0):
         sensor_key = f"sensor:{data['sensor_id']}"
-        self.redis_client.setex(sensor_key, 600, json.dumps(data))
+        self.redis_client.setex(sensor_key, 600, json.dumps(data, cls=NumpyEncoder))
         
         location_key = f"location:{data['location']}:sensors"
         self.redis_client.sadd(location_key, data['sensor_id'])
@@ -173,6 +251,10 @@ class StreamProcessor:
             self.redis_client.sadd("alerts:critical", data['sensor_id'])
         elif data['status'] == 'warning':
             self.redis_client.sadd("alerts:warning", data['sensor_id'])
+        
+        # Log periodically for debugging
+        if processed_count % 50 == 0:
+            logger.info(f"Stored data for {data['sensor_id']} in Redis (key: {sensor_key})")
 
 if __name__ == "__main__":
     processor = StreamProcessor()
