@@ -105,7 +105,7 @@ const Dashboard = () => {
         <StatCard
           icon={TrendingUp}
           title="System Efficiency"
-          value={`${stats.efficiency_score || 0}%`}
+          value={`${Number(stats.efficiency_score || 0).toFixed(2)}%`}
           subtitle="Overall performance"
           color="purple"
         />
@@ -113,7 +113,7 @@ const Dashboard = () => {
         <StatCard
           icon={Thermometer}
           title="Average Temperature"
-          value={`${stats.avg_temperature || 0}°C`}
+          value={`${Number(stats.avg_temperature || 0).toFixed(2)}°C`}
           subtitle="Across all devices"
           color="orange"
         />

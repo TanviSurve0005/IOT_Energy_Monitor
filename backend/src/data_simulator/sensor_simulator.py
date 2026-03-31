@@ -13,14 +13,13 @@ logger = logging.getLogger(__name__)
 class SensorSimulator:
     def __init__(self, kafka_broker=None):
         if kafka_broker is None:
-            # Get producer laptop IP from environment or auto-detect
-            producer_ip = os.getenv('HOST_IP', self._get_local_ip())
-            kafka_broker = f"{producer_ip}:9092"
+            # Prefer explicit broker, default to localhost for same-PC setup.
+            kafka_broker = os.getenv('KAFKA_BROKER', 'localhost:9092')
         
         self.kafka_broker = kafka_broker
         self.producer = self._initialize_kafka_producer()
-        self.sensors = self._initialize_sensors()
         self.total_sensors = 300  # Fixed number of active sensors
+        self.sensors = self._initialize_sensors()
         logger.info(f"Initialized {len(self.sensors)} sensors on Kafka broker: {kafka_broker}")
     
     def _get_local_ip(self):

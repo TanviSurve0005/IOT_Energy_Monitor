@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
-import io from 'socket.io-client';
 
 const EnergyContext = createContext();
 
@@ -33,80 +32,66 @@ export const EnergyProvider = ({ children }) => {
   // Socket.io connection for real-time updates
   const connectWebSocket = () => {
     try {
-      const socket = io(API_BASE_URL, {
-        transports: ['websocket', 'polling'],
-        timeout: 10000
-      });
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const wsUrl = `${wsProtocol}://${window.location.hostname}:8000/ws`;
+      const socket = new WebSocket(wsUrl);
+      let pingInterval = null;
 
-      socket.on('connect', () => {
-        console.log('✅ Connected to consumer API via WebSocket');
+      socket.onopen = () => {
+        console.log('Connected to consumer API via WebSocket');
         setIsConnected(true);
         setKafkaStatus('connected');
         setLoading(false);
-      });
-
-      socket.on('stats_update', (data) => {
-        setRealTimeData(prev => ({
-          ...prev,
-          stats: data.data
-        }));
-      });
-
-      socket.on('sensor_update', (data) => {
-        const sensorData = data.data;
-        
-        // Update sensors list
-        setRealTimeData(prev => {
-          const filteredSensors = prev.sensors.filter(s => s.sensor_id !== sensorData.sensor_id);
-          const updatedSensors = [...filteredSensors, sensorData].slice(-100); // Keep last 100 readings
-          
-          // Update alerts if anomaly detected
-          let updatedAlerts = prev.alerts;
-          let updatedAnomalies = prev.anomalies;
-          
-          if (sensorData.is_anomaly) {
-            updatedAnomalies = [sensorData, ...prev.anomalies].slice(-20);
+        // Backend sends updates after receiving a message.
+        pingInterval = setInterval(() => {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send('ping');
           }
-          
-          if (sensorData.status === 'critical') {
-            updatedAlerts = [sensorData, ...prev.alerts.filter(a => a.sensor_id !== sensorData.sensor_id)].slice(-10);
+        }, 5000);
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.type === 'initial_data' || payload.type === 'stats_update') {
+            setRealTimeData(prev => ({
+              ...prev,
+              stats: payload.data || {}
+            }));
           }
+        } catch (error) {
+          console.error('Failed to parse websocket payload:', error);
+        }
+      };
 
-          return {
-            ...prev,
-            sensors: updatedSensors,
-            alerts: updatedAlerts,
-            anomalies: updatedAnomalies
-          };
-        });
-      });
-
-      socket.on('disconnect', (reason) => {
-        console.log('❌ Disconnected from consumer API:', reason);
+      socket.onclose = () => {
+        console.log('Disconnected from consumer API');
         setIsConnected(false);
         setKafkaStatus('disconnected');
+        if (pingInterval) {
+          clearInterval(pingInterval);
+        }
         
         // Attempt reconnect after 5 seconds
         setTimeout(() => {
-          console.log('🔄 Attempting to reconnect...');
+          console.log('Attempting to reconnect...');
           connectWebSocket();
         }, 5000);
-      });
+      };
 
-      socket.on('connect_error', (error) => {
-        console.error('❌ Connection error:', error);
+      socket.onerror = (error) => {
+        console.error('Connection error:', error);
         setIsConnected(false);
         setKafkaStatus('error');
         setLoading(false);
-      });
-
-      socket.on('kafka_status', (status) => {
-        setKafkaStatus(status);
-      });
+        if (pingInterval) {
+          clearInterval(pingInterval);
+        }
+      };
 
       return socket;
     } catch (error) {
-      console.error('❌ Failed to create WebSocket connection:', error);
+      console.error('Failed to create WebSocket connection:', error);
       setIsConnected(false);
       setLoading(false);
       return null;
@@ -325,22 +310,33 @@ export const EnergyProvider = ({ children }) => {
 
     // Set up periodic data refresh
     const refreshInterval = setInterval(() => {
-      if (isConnected) {
-        fetchOptimizationSuggestions();
-      }
+      fetchOptimizationSuggestions();
     }, 30000); // Refresh every 30 seconds
 
     return () => {
       if (socket) {
-        socket.disconnect();
+        socket.close();
       }
       clearInterval(refreshInterval);
     };
-  }, [isConnected]);
+  }, []);
 
   // Calculate derived statistics
+  const avgTemperature = realTimeData.sensors.length > 0
+    ? realTimeData.sensors.reduce((sum, sensor) => sum + (sensor.temperature || 0), 0) / realTimeData.sensors.length
+    : 0;
+  const totalPower = realTimeData.sensors.reduce((sum, sensor) => sum + (sensor.current || 0), 0);
   const derivedStats = {
     ...realTimeData.stats,
+    // Backward-compatible aliases expected by dashboard cards/components.
+    total_energy: realTimeData.stats.total_energy_consumption || 0,
+    critical_sensors: realTimeData.sensors.filter(s => s.status === 'critical').length,
+    total_sensors: realTimeData.sensors.length,
+    efficiency_score: realTimeData.sensors.length > 0
+      ? (realTimeData.sensors.reduce((sum, sensor) => sum + (sensor.power_factor || 0.9), 0) / realTimeData.sensors.length) * 100
+      : 0,
+    avg_temperature: avgTemperature,
+    total_power: totalPower,
     totalSensors: realTimeData.sensors.length,
     criticalSensors: realTimeData.sensors.filter(s => s.status === 'critical').length,
     warningSensors: realTimeData.sensors.filter(s => s.status === 'warning').length,

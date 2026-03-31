@@ -8,6 +8,7 @@ from sklearn.preprocessing import StandardScaler
 import redis
 import logging
 from datetime import datetime
+import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,15 +19,9 @@ class StreamProcessor:
             kafka_broker = os.getenv('KAFKA_BROKER', 'localhost:9092')
         if redis_host is None:
             redis_host = os.getenv('REDIS_HOST', 'localhost')
+        self.kafka_broker = kafka_broker
         try:
-            self.consumer = KafkaConsumer(
-                'sensor-data',
-                bootstrap_servers=[kafka_broker],
-                value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-                auto_offset_reset='earliest',
-                group_id='energy-monitor-group',
-                enable_auto_commit=True
-            )
+            self.consumer = self._create_consumer()
             self.redis_client = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
             self.anomaly_model = self._train_anomaly_model()
             self.scaler = StandardScaler()
@@ -34,6 +29,16 @@ class StreamProcessor:
         except Exception as e:
             logger.error(f"Failed to initialize stream processor: {e}")
             raise
+
+    def _create_consumer(self):
+        return KafkaConsumer(
+            'sensor-data',
+            bootstrap_servers=[self.kafka_broker],
+            value_deserializer=lambda x: json.loads(x.decode('utf-8')),
+            auto_offset_reset='earliest',
+            group_id='energy-monitor-group',
+            enable_auto_commit=True
+        )
     
     def _train_anomaly_model(self):
         np.random.seed(42)
@@ -51,39 +56,51 @@ class StreamProcessor:
     def process_stream(self):
         logger.info("Starting to process sensor data stream...")
         processed_count = 0
-        
-        for message in self.consumer:
+
+        while True:
             try:
-                data = message.value
-                processed_count += 1
-                
-                features = np.array([[data['current'], data['temperature'], data['pressure']]])
-                
-                if processed_count == 1:
-                    self.scaler.partial_fit(features)
-                features_scaled = self.scaler.transform(features)
-                
-                is_anomaly = self.anomaly_model.predict(features_scaled)[0] == -1
-                anomaly_score = float(self.anomaly_model.decision_function(features_scaled)[0])
-                
-                failure_prob = self._calculate_failure_probability(data, is_anomaly, anomaly_score)
-                
-                data.update({
-                    'is_anomaly': is_anomaly,
-                    'anomaly_score': round(anomaly_score, 4),
-                    'failure_probability': round(failure_prob, 3),
-                    'processed_at': datetime.utcnow().isoformat(),
-                    'data_quality_score': round(random.uniform(0.85, 0.99), 2)  # FIXED: random is now imported
-                })
-                
-                self._store_sensor_data(data)
-                
-                if processed_count % 100 == 0:
-                    logger.info(f"Processed {processed_count} sensor messages")
-                    
-                if is_anomaly:
-                    logger.warning(f"Anomaly detected: {data['sensor_id']} - Score: {anomaly_score:.3f}")
-                    
+                # Using poll() is more stable than iterator on some Python 3.12 environments.
+                record_map = self.consumer.poll(timeout_ms=1000, max_records=200)
+                for _, records in record_map.items():
+                    for message in records:
+                        data = message.value
+                        processed_count += 1
+
+                        features = np.array([[data['current'], data['temperature'], data['pressure']]])
+
+                        if processed_count == 1:
+                            self.scaler.partial_fit(features)
+                        features_scaled = self.scaler.transform(features)
+
+                        # Cast NumPy scalars to native Python types for JSON serialization.
+                        is_anomaly = bool(self.anomaly_model.predict(features_scaled)[0] == -1)
+                        anomaly_score = float(self.anomaly_model.decision_function(features_scaled)[0])
+
+                        failure_prob = self._calculate_failure_probability(data, is_anomaly, anomaly_score)
+
+                        data.update({
+                            'is_anomaly': is_anomaly,
+                            'anomaly_score': round(anomaly_score, 4),
+                            'failure_probability': round(failure_prob, 3),
+                            'processed_at': datetime.utcnow().isoformat(),
+                            'data_quality_score': round(random.uniform(0.85, 0.99), 2)
+                        })
+
+                        self._store_sensor_data(data)
+
+                        if processed_count % 100 == 0:
+                            logger.info(f"Processed {processed_count} sensor messages")
+
+                        if is_anomaly:
+                            logger.warning(f"Anomaly detected: {data['sensor_id']} - Score: {anomaly_score:.3f}")
+            except ValueError as e:
+                logger.warning("Kafka consumer socket issue detected, reconnecting: %s", e)
+                try:
+                    self.consumer.close()
+                except Exception:
+                    pass
+                time.sleep(1)
+                self.consumer = self._create_consumer()
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
                 continue
