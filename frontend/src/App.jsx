@@ -23,7 +23,7 @@ function App() {
       return (
         <div className="loading-container">
           <div className="loading-spinner"></div>
-          <p>Initializing EnergyIQ...</p>
+          <p>Initializing VoltAI...</p>
         </div>
       )
     }
@@ -54,7 +54,7 @@ function App() {
           {/* Footer */}
           <footer className="app-footer">
             <div className="footer-content">
-              <p>EnergyIQ v2.0 | Real-time Factory Management System</p>
+              <p>VoltAI v2.0 | Real-time Factory Management System</p>
               <div className="footer-stats">
                 <span>🟢 System Operational</span>
                 <span>📊 300+ Sensors Active</span>

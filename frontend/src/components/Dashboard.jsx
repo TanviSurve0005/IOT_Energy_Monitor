@@ -78,7 +78,7 @@ const Dashboard = () => {
   return (
     <div className="dashboard">
       <div className="dashboard-header">
-        <h1>EnergyIQ Monitoring Dashboard</h1>
+        <h1>VoltAI Monitoring Dashboard</h1>
         <p>Real-time factory energy consumption and safety monitoring</p>
         <div className="connection-badge">
           <div className={`status-dot ${isConnected ? 'connected' : 'disconnected'}`}></div>

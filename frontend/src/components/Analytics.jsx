@@ -353,7 +353,7 @@ const Analytics = () => {
     
     // Create CSV content
     const csvContent = [
-      ['EnergyIQ Energy Analytics Report'],
+      ['VoltAI Energy Analytics Report'],
       [`Generated: ${new Date().toLocaleDateString()}`],
       [`Time Range: Last ${timeRange} hours`],
       [''],
@@ -380,7 +380,7 @@ const Analytics = () => {
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
-    link.setAttribute('download', `EnergyIQ-Energy-Report-${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `VoltAI-Energy-Report-${new Date().toISOString().split('T')[0]}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
