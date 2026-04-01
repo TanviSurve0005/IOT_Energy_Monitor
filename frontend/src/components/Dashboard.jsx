@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { useEnergy } from '../context/EnergyContext';
 import { 
   Zap, 
@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import RealTimeChart from './RealTimeChart';
 import AnomalyMap from './AnomalyMap';
+import { computeEfficiencyScore } from '../utils/efficiencyScore';
 
 const StatCard = ({ icon: Icon, title, value, subtitle, trend, color = 'default' }) => (
   <div className={`stat-card ${color} fade-in`}>
@@ -22,9 +23,9 @@ const StatCard = ({ icon: Icon, title, value, subtitle, trend, color = 'default'
       <h3>{title}</h3>
       <div className="stat-value">{value}</div>
       <div className="stat-subtitle">{subtitle}</div>
-      {trend && (
+      {trend != null && Number.isFinite(trend) && (
         <div className={`stat-trend ${trend > 0 ? 'positive' : 'negative'}`}>
-          {trend > 0 ? '↗' : '↘'} {Math.abs(trend)}%
+          {trend > 0 ? '↗' : '↘'} {Math.min(Math.floor(Math.abs(trend)), 999)}%
         </div>
       )}
     </div>
@@ -51,23 +52,29 @@ const AlertItem = ({ alert }) => (
 
 const Dashboard = () => {
   const { realTimeData, isConnected } = useEnergy();
-  const [criticalAlerts, setCriticalAlerts] = useState([]);
 
-  useEffect(() => {
-    if (realTimeData.sensors && realTimeData.sensors.length > 0) {
-      const alerts = realTimeData.sensors
-        .filter(sensor => sensor.status === 'critical')
-        .slice(0, 5);
-      setCriticalAlerts(alerts);
-    }
-  }, [realTimeData.sensors]);
+  const rawStats = realTimeData.stats || {};
+  const sensors = realTimeData.sensors || [];
 
-  const stats = realTimeData.stats || {};
+  const stats = {
+    ...rawStats,
+    total_energy: rawStats.total_energy ?? rawStats.total_energy_consumption ?? 0,
+    critical_sensors: Math.max(
+      Number(rawStats.critical_sensors ?? 0),
+      Number(rawStats.status_critical ?? 0),
+      Number(realTimeData.alerts?.length ?? 0),
+      sensors.filter(sensor => sensor.status === 'critical').length
+    ),
+    total_sensors: rawStats.total_sensors ?? sensors.length,
+    avg_temperature: rawStats.avg_temperature ?? rawStats.average_temperature ?? 0,
+    efficiency_score: computeEfficiencyScore(rawStats, sensors),
+  };
+  const criticalAlerts = sensors.filter(sensor => sensor.status === 'critical').slice(0, 5);
 
   return (
     <div className="dashboard">
       <div className="dashboard-header">
-        <h1>Smart Energy Monitoring Dashboard</h1>
+        <h1>VoltAI Monitoring Dashboard</h1>
         <p>Real-time factory energy consumption and safety monitoring</p>
         <div className="connection-badge">
           <div className={`status-dot ${isConnected ? 'connected' : 'disconnected'}`}></div>
@@ -129,7 +136,8 @@ const Dashboard = () => {
 
       {/* Main Content Area */}
       <div className="dashboard-content">
-        <div className="content-column">
+        {/* Row 1: Real-time Chart and Critical Alerts */}
+        <div className="dashboard-row top-row">
           <div className="chart-section">
             <div className="chart-container">
               <div className="chart-header">
@@ -137,7 +145,7 @@ const Dashboard = () => {
                 <div className="chart-legend">
                   <span className="legend-item">
                     <div className="legend-color blue"></div>
-                    Energy (kWh)
+                    Live avg kWh / sensor (fleet)
                   </span>
                 </div>
               </div>
@@ -145,50 +153,39 @@ const Dashboard = () => {
             </div>
           </div>
 
-          <div className="map-section">
-            <div className="chart-container">
-              <div className="chart-header">
-                <h3 className="chart-title">Factory Floor Monitoring</h3>
-                <div className="chart-legend">
-                  <span className="legend-item">
-                    <div className="legend-color green"></div>
-                    Normal
-                  </span>
-                  <span className="legend-item">
-                    <div className="legend-color orange"></div>
-                    Warning
-                  </span>
-                  <span className="legend-item">
-                    <div className="legend-color red"></div>
-                    Critical
-                  </span>
-                </div>
+          <div className="alerts-section">
+            <div className="alerts-shell">
+              <div className="section-header">
+                <AlertTriangle size={20} />
+                <h3>Critical Alerts</h3>
+                <span className="badge">{stats.critical_sensors}</span>
               </div>
-              <AnomalyMap sensors={realTimeData.sensors || []} />
+              
+              <div className="alerts-list">
+                {criticalAlerts.length > 0 ? (
+                  criticalAlerts.map(alert => (
+                    <AlertItem key={alert.sensor_id} alert={alert} />
+                  ))
+                ) : (
+                  <div className="no-alerts">
+                    <div className="no-alerts-icon">✅</div>
+                    <p>No critical alerts</p>
+                    <span>All systems operating normally</span>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
 
-        <div className="sidebar">
-          <div className="alerts-section">
-            <div className="section-header">
-              <AlertTriangle size={20} />
-              <h3>Critical Alerts</h3>
-              <span className="badge">{criticalAlerts.length}</span>
-            </div>
-            
-            <div className="alerts-list">
-              {criticalAlerts.length > 0 ? (
-                criticalAlerts.map(alert => (
-                  <AlertItem key={alert.sensor_id} alert={alert} />
-                ))
-              ) : (
-                <div className="no-alerts">
-                  <div className="no-alerts-icon">✅</div>
-                  <p>No critical alerts</p>
-                  <span>All systems operating normally</span>
-                </div>
-              )}
+        {/* Row 2: Factory Floor and System Status */}
+        <div className="dashboard-row bottom-row">
+          <div className="map-section">
+            <div className="chart-container">
+              <div className="chart-header">
+                <h3 className="chart-title">Factory Floor Monitoring</h3>
+              </div>
+              <AnomalyMap sensors={realTimeData.sensors || []} />
             </div>
           </div>
 
@@ -216,7 +213,7 @@ const Dashboard = () => {
               
               <div className="quick-stat">
                 <div className="quick-stat-label">Avg Power</div>
-                <div className="quick-stat-value">{stats.total_power || 0}A</div>
+                <div className="quick-stat-value">{Number(stats.avg_power ?? 0).toFixed(2)}A</div>
               </div>
             </div>
           </div>

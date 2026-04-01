@@ -7,6 +7,8 @@ import logging
 import os
 import socket
 
+from src.sensor_thresholds import apply_threshold_classification
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -65,11 +67,18 @@ class SensorSimulator:
         locations = ['floor_a', 'floor_b', 'floor_c', 'assembly_line', 'warehouse', 'production_a', 'production_b']
         
         # Create exactly 300 sensors
+        nominal_voltage = 220.0
         for i in range(self.total_sensors):
             base_current = random.uniform(5, 50)
             base_temp = random.uniform(20, 40)
             base_pressure = random.uniform(1, 10)
-            
+            rated_current = max(60.0, base_current * random.uniform(2.4, 3.2))
+            operating_pressure = max(8.0, base_pressure * random.uniform(1.3, 1.6))
+            # Baseline kWh per interval (typical mid-load vs rated) for % energy bands
+            energy_baseline_kwh = round(
+                (base_current * nominal_voltage / 1000.0) * random.uniform(0.55, 0.75), 4
+            )
+
             sensors.append({
                 'sensor_id': f'sensor_{i:03d}',
                 'device_type': random.choice(device_types),
@@ -77,6 +86,10 @@ class SensorSimulator:
                 'base_current': base_current,
                 'base_temp': base_temp,
                 'base_pressure': base_pressure,
+                'rated_current': round(rated_current, 2),
+                'nominal_voltage': nominal_voltage,
+                'operating_pressure': round(operating_pressure, 2),
+                'energy_baseline_kwh': energy_baseline_kwh,
                 'installation_date': f"2024-{random.randint(1,12):02d}-{random.randint(1,28):02d}"
             })
         
@@ -139,23 +152,30 @@ class SensorSimulator:
         # Occasional anomalies
         anomaly_chance = random.random()
         
-        if anomaly_chance < 0.02:  # 2% critical anomaly
+        nominal = sensor['nominal_voltage']
+        if anomaly_chance < 0.02:  # 2% severe excursion
             current = sensor['base_current'] * random.uniform(1.8, 3.0) * time_multiplier
             temperature = sensor['base_temp'] * random.uniform(1.5, 2.5) * time_multiplier
             pressure = sensor['base_pressure'] * random.uniform(1.4, 2.2) * time_multiplier
-            status = 'critical'
-        elif anomaly_chance < 0.08:  # 6% warning
+            voltage = nominal * random.uniform(0.84, 1.22)
+            vibration = random.uniform(5.5, 9.0)
+        elif anomaly_chance < 0.08:  # 6% elevated
             current = sensor['base_current'] * random.uniform(1.2, 1.6) * time_multiplier
             temperature = sensor['base_temp'] * random.uniform(1.1, 1.4) * time_multiplier
             pressure = sensor['base_pressure'] * random.uniform(1.1, 1.3) * time_multiplier
-            status = 'warning'
-        else:  # 92% normal
+            voltage = nominal * random.uniform(0.88, 1.14)
+            vibration = random.uniform(3.5, 6.5)
+        else:  # typical operation
             current = sensor['base_current'] * random.uniform(0.9, 1.1) * time_multiplier
             temperature = sensor['base_temp'] * random.uniform(0.95, 1.05) * time_multiplier
             pressure = sensor['base_pressure'] * random.uniform(0.95, 1.05) * time_multiplier
-            status = 'normal'
-        
-        return {
+            voltage = nominal * random.uniform(0.97, 1.06)
+            vibration = random.uniform(0.4, 3.8)
+
+        pf = round(random.uniform(0.85, 0.95), 2)
+        energy_kwh = round(current * voltage / 1000.0 * pf, 4)
+
+        reading = {
             'timestamp': datetime.utcnow().isoformat(),
             'sensor_id': sensor['sensor_id'],
             'device_type': sensor['device_type'],
@@ -163,12 +183,17 @@ class SensorSimulator:
             'current': round(current, 2),
             'temperature': round(temperature, 1),
             'pressure': round(pressure, 2),
-            'status': status,
-            'energy_consumption': round(current * 220 / 1000, 2),  # kWh
-            'voltage': 220,
-            'power_factor': round(random.uniform(0.85, 0.95), 2),
-            'producer_host': os.getenv('HOST_IP', 'unknown')
+            'energy_consumption': energy_kwh,
+            'voltage': round(voltage, 2),
+            'vibration': round(vibration, 2),
+            'power_factor': pf,
+            'producer_host': os.getenv('HOST_IP', 'unknown'),
+            'rated_current': sensor['rated_current'],
+            'nominal_voltage': sensor['nominal_voltage'],
+            'operating_pressure': sensor['operating_pressure'],
+            'energy_baseline_kwh': sensor['energy_baseline_kwh'],
         }
+        return apply_threshold_classification(reading)
     
     def _send_batch(self, batch_data):
         """Send a batch of sensor data to Kafka"""

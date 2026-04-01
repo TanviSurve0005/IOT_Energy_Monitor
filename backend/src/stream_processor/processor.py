@@ -10,6 +10,8 @@ import logging
 from datetime import datetime
 import time
 
+from src.sensor_thresholds import apply_threshold_classification
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -66,6 +68,8 @@ class StreamProcessor:
                         data = message.value
                         processed_count += 1
 
+                        apply_threshold_classification(data)
+
                         features = np.array([[data['current'], data['temperature'], data['pressure']]])
 
                         if processed_count == 1:
@@ -79,7 +83,7 @@ class StreamProcessor:
                         failure_prob = self._calculate_failure_probability(data, is_anomaly, anomaly_score)
 
                         data.update({
-                            'is_anomaly': is_anomaly,
+                            'ml_anomaly': is_anomaly,
                             'anomaly_score': round(anomaly_score, 4),
                             'failure_probability': round(failure_prob, 3),
                             'processed_at': datetime.utcnow().isoformat(),
@@ -92,7 +96,9 @@ class StreamProcessor:
                             logger.info(f"Processed {processed_count} sensor messages")
 
                         if is_anomaly:
-                            logger.warning(f"Anomaly detected: {data['sensor_id']} - Score: {anomaly_score:.3f}")
+                            logger.warning(
+                                f"ML outlier: {data['sensor_id']} - Score: {anomaly_score:.3f}"
+                            )
             except ValueError as e:
                 logger.warning("Kafka consumer socket issue detected, reconnecting: %s", e)
                 try:
@@ -106,26 +112,19 @@ class StreamProcessor:
                 continue
     
     def _calculate_failure_probability(self, data, is_anomaly, anomaly_score):
-        base_score = 0.0
-        
-        if data['current'] > 80: base_score += 0.4
-        elif data['current'] > 60: base_score += 0.2
-        elif data['current'] > 40: base_score += 0.1
-        
-        if data['temperature'] > 85: base_score += 0.3
-        elif data['temperature'] > 70: base_score += 0.15
-        elif data['temperature'] > 55: base_score += 0.05
-        
-        if data['pressure'] > 18: base_score += 0.3
-        elif data['pressure'] > 12: base_score += 0.15
-        elif data['pressure'] > 8: base_score += 0.05
-        
-        if data['status'] == 'critical': base_score += 0.3
-        elif data['status'] == 'warning': base_score += 0.15
-        
+        bands = data.get('threshold_bands') or {}
+        rank = {'LOW': 0, 'MEDIUM': 1, 'HIGH': 2, 'CRITICAL': 3}
+        worst = max((rank.get(b, 0) for b in bands.values()), default=0)
+        base_score = {0: 0.05, 1: 0.18, 2: 0.42, 3: 0.68}.get(worst, 0.1)
+
+        if data.get('status') == 'critical':
+            base_score = max(base_score, 0.55)
+        elif data.get('status') == 'warning':
+            base_score = max(base_score, 0.28)
+
         if is_anomaly:
-            base_score += max(0, (anomaly_score + 0.1) * 0.5)
-        
+            base_score += max(0, (anomaly_score + 0.1) * 0.25)
+
         return min(base_score, 1.0)
     
     def _store_sensor_data(self, data):

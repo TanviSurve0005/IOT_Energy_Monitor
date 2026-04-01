@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useEnergy } from '../context/EnergyContext';
 import { Search, Filter, Zap, Thermometer, Gauge, MapPin } from 'lucide-react';
 
-const SensorCard = ({ sensor, onControl }) => {
+const SensorCard = ({ sensor, onControl, actionState }) => {
   const getStatusColor = (status) => {
     switch (status) {
       case 'critical': return '#ef4444';
@@ -18,6 +18,10 @@ const SensorCard = ({ sensor, onControl }) => {
       default: return '🟢';
     }
   };
+
+  const isBusy = actionState?.loading === true;
+  const statusMessage = actionState?.message || '';
+  const statusType = actionState?.success === false ? 'error' : 'success';
 
   return (
     <div className={`sensor-card ${sensor.status}`}>
@@ -84,16 +88,34 @@ const SensorCard = ({ sensor, onControl }) => {
         <button 
           className="btn-secondary"
           onClick={() => onControl(sensor.sensor_id, 'restart')}
+          disabled={isBusy}
         >
-          Restart
+          {isBusy && actionState?.action === 'restart' ? 'Restarting...' : 'Restart'}
         </button>
         <button 
           className="btn-primary"
           onClick={() => onControl(sensor.sensor_id, 'shutdown')}
+          disabled={isBusy}
         >
-          Shutdown
+          {isBusy && actionState?.action === 'shutdown' ? 'Shutting down...' : 'Shutdown'}
         </button>
       </div>
+
+      {statusMessage && (
+        <div
+          style={{
+            marginTop: '0.5rem',
+            padding: '0.45rem 0.6rem',
+            borderRadius: '0.45rem',
+            fontSize: '0.75rem',
+            color: statusType === 'error' ? '#fecaca' : '#bbf7d0',
+            background: statusType === 'error' ? 'rgba(127, 29, 29, 0.45)' : 'rgba(6, 78, 59, 0.45)',
+            border: statusType === 'error' ? '1px solid rgba(239,68,68,0.5)' : '1px solid rgba(16,185,129,0.5)',
+          }}
+        >
+          {statusMessage}
+        </div>
+      )}
 
       <div className="sensor-timestamp">
         Last update: {new Date(sensor.timestamp).toLocaleTimeString()}
@@ -109,6 +131,8 @@ const SensorGrid = () => {
   const [statusFilter, setStatusFilter] = useState('all');
   const [locationFilter, setLocationFilter] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
+  const [actionStates, setActionStates] = useState({});
+  const [confirmState, setConfirmState] = useState({ open: false, sensorId: '' });
   const sensorsPerPage = 12;
 
   useEffect(() => {
@@ -141,10 +165,55 @@ const SensorGrid = () => {
     setCurrentPage(1); // Reset to first page when filters change
   }, [realTimeData.sensors, searchTerm, statusFilter, locationFilter]);
 
+  const executeControl = async (sensorId, action) => {
+    setActionStates(prev => ({
+      ...prev,
+      [sensorId]: {
+        loading: true,
+        action,
+        success: undefined,
+        message: '',
+      },
+    }));
+
+    try {
+      const result = await controlDevice(sensorId, action);
+      setActionStates(prev => ({
+        ...prev,
+        [sensorId]: {
+          loading: false,
+          action,
+          success: !!result?.success,
+          message: result?.message || `${action} command sent.`,
+        },
+      }));
+
+      setTimeout(() => {
+        setActionStates(prev => {
+          const next = { ...prev };
+          delete next[sensorId];
+          return next;
+        });
+      }, 2500);
+    } catch (error) {
+      setActionStates(prev => ({
+        ...prev,
+        [sensorId]: {
+          loading: false,
+          action,
+          success: false,
+          message: `Failed to ${action} ${sensorId}.`,
+        },
+      }));
+    }
+  };
+
   const handleControl = async (sensorId, action) => {
-    const result = await controlDevice(sensorId, action);
-    // Show notification (you could add a toast system here)
-    console.log(result.message);
+    if (action === 'shutdown') {
+      setConfirmState({ open: true, sensorId });
+      return;
+    }
+    await executeControl(sensorId, action);
   };
 
   // Pagination
@@ -230,6 +299,7 @@ const SensorGrid = () => {
             key={sensor.sensor_id} 
             sensor={sensor} 
             onControl={handleControl}
+            actionState={actionStates[sensor.sensor_id]}
           />
         ))}
       </div>
@@ -260,6 +330,35 @@ const SensorGrid = () => {
           <Zap size={48} />
           <h3>No sensors found</h3>
           <p>Try adjusting your search or filters</p>
+        </div>
+      )}
+
+      {confirmState.open && (
+        <div className="sensor-modal-overlay">
+          <div className="sensor-modal">
+            <h3>Confirm Shutdown</h3>
+            <p>
+              Are you sure you want to shutdown <strong>{confirmState.sensorId}</strong>?
+            </p>
+            <div className="sensor-modal-actions">
+              <button
+                className="btn-secondary"
+                onClick={() => setConfirmState({ open: false, sensorId: '' })}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn-primary"
+                onClick={async () => {
+                  const id = confirmState.sensorId;
+                  setConfirmState({ open: false, sensorId: '' });
+                  await executeControl(id, 'shutdown');
+                }}
+              >
+                Confirm Shutdown
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

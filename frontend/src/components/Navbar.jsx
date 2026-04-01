@@ -1,9 +1,11 @@
 import React from 'react';
-import { Zap, Activity, BarChart3, Lightbulb, Wifi, WifiOff } from 'lucide-react';
+import { Zap, Activity, BarChart3, Lightbulb, Wifi, WifiOff, Sun, Moon } from 'lucide-react';
 import { useEnergy } from '../context/EnergyContext';
+import { useTheme } from '../context/ThemeContext';
 
 const Navbar = ({ activeTab, setActiveTab }) => {
   const { isConnected } = useEnergy();
+  const { isDarkMode, toggleTheme } = useTheme();
 
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: Activity },
@@ -38,6 +40,17 @@ const Navbar = ({ activeTab, setActiveTab }) => {
               </button>
             );
           })}
+          
+          <div className="nav-controls">
+            <div id="google_translate_element"></div>
+            <button
+              className="theme-toggle"
+              onClick={toggleTheme}
+              title={`Switch to ${isDarkMode ? 'light' : 'dark'} mode`}
+            >
+              {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
+          </div>
         </div>
       </div>
     </nav>

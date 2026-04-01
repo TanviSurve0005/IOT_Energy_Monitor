@@ -1,7 +1,50 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import { computeEfficiencyScore } from '../utils/efficiencyScore';
 
 const EnergyContext = createContext();
+
+/** Shared stats merge — module scope so callbacks stay stable. */
+function normalizeDashboardStats(stats = {}, sensors = []) {
+  const validTemps = sensors
+    .map((s) => Number(s?.temperature))
+    .filter((t) => Number.isFinite(t));
+  const sensorAvgTemp = validTemps.length
+    ? validTemps.reduce((sum, t) => sum + t, 0) / validTemps.length
+    : 0;
+  const sensorAnomalyCount = sensors.filter((s) => s?.is_anomaly === true).length;
+  const sensorCurrents = sensors.map((s) => Number(s?.current)).filter((v) => Number.isFinite(v));
+  const sensorTotalPower = sensorCurrents.reduce((sum, v) => sum + v, 0);
+  const sensorAvgPower = sensorCurrents.length ? sensorTotalPower / sensorCurrents.length : 0;
+
+  const sensorCriticalCount = sensors.filter((s) => s?.status === 'critical').length;
+  const sensorWarningCount = sensors.filter((s) => s?.status === 'warning').length;
+  const abnormalByStatus = sensorCriticalCount + sensorWarningCount;
+  const rawAnomaly = Number(stats.anomaly_count ?? stats.total_anomalies ?? sensorAnomalyCount);
+  const normalizedAnomaly =
+    abnormalByStatus > 0 ? Math.min(rawAnomaly, abnormalByStatus) : Math.max(0, rawAnomaly);
+
+  return {
+    ...stats,
+    total_energy: stats.total_energy ?? stats.total_energy_consumption ?? 0,
+    total_sensors: stats.total_sensors ?? sensors.length ?? 0,
+    critical_sensors: Math.max(
+      Number(stats.critical_sensors ?? 0),
+      Number(stats.status_critical ?? 0),
+      sensorCriticalCount
+    ),
+    warning_sensors: Math.max(
+      Number(stats.warning_sensors ?? 0),
+      Number(stats.status_warning ?? 0),
+      sensorWarningCount
+    ),
+    avg_temperature: stats.avg_temperature ?? stats.average_temperature ?? sensorAvgTemp,
+    anomaly_count: normalizedAnomaly,
+    total_power: stats.total_power ?? stats.avg_power ?? sensorTotalPower,
+    avg_power: stats.avg_power ?? sensorAvgPower,
+    efficiency_score: computeEfficiencyScore(stats, sensors),
+  };
+}
 
 export const useEnergy = () => {
   const context = useContext(EnergyContext);
@@ -15,365 +58,271 @@ export const EnergyProvider = ({ children }) => {
   const [realTimeData, setRealTimeData] = useState({
     stats: {},
     sensors: [],
-    alerts: [],
-    anomalies: []
+    alerts: []
   });
   const [optimizationSuggestions, setOptimizationSuggestions] = useState([]);
   const [historicalData, setHistoricalData] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [consumerHost, setConsumerHost] = useState('');
-  const [producerHost, setProducerHost] = useState('');
-  const [kafkaStatus, setKafkaStatus] = useState('disconnected');
 
-  // API base URL - points to consumer laptop's API
-  const API_BASE_URL = `http://${window.location.hostname}:8000`;
-
-  // Socket.io connection for real-time updates
+  // WebSocket connection
   const connectWebSocket = () => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.hostname}:8000/ws`;
+    
     try {
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const wsUrl = `${wsProtocol}://${window.location.hostname}:8000/ws`;
-      const socket = new WebSocket(wsUrl);
-      let pingInterval = null;
+      const ws = new WebSocket(wsUrl);
 
-      socket.onopen = () => {
-        console.log('Connected to consumer API via WebSocket');
+      ws.onopen = () => {
+        console.log('WebSocket connected');
         setIsConnected(true);
-        setKafkaStatus('connected');
         setLoading(false);
-        // Backend sends updates after receiving a message.
-        pingInterval = setInterval(() => {
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send('ping');
-          }
-        }, 5000);
       };
 
-      socket.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload.type === 'initial_data' || payload.type === 'stats_update') {
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        
+        switch (data.type) {
+          case 'initial_data':
+          case 'stats_update':
             setRealTimeData(prev => ({
               ...prev,
-              stats: payload.data || {}
+              stats: normalizeDashboardStats(data.data, prev.sensors)
             }));
-          }
-        } catch (error) {
-          console.error('Failed to parse websocket payload:', error);
+            break;
+          
+          case 'critical_alert':
+            setRealTimeData(prev => ({
+              ...prev,
+              alerts: data.data.sensors
+            }));
+            break;
+          
+          default:
+            console.log('Unknown message type:', data.type);
         }
       };
 
-      socket.onclose = () => {
-        console.log('Disconnected from consumer API');
+      ws.onclose = () => {
+        console.log('WebSocket disconnected');
         setIsConnected(false);
-        setKafkaStatus('disconnected');
-        if (pingInterval) {
-          clearInterval(pingInterval);
-        }
-        
-        // Attempt reconnect after 5 seconds
-        setTimeout(() => {
-          console.log('Attempting to reconnect...');
-          connectWebSocket();
-        }, 5000);
+        // Attempt reconnect after 3 seconds
+        setTimeout(connectWebSocket, 3000);
       };
 
-      socket.onerror = (error) => {
-        console.error('Connection error:', error);
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
         setIsConnected(false);
-        setKafkaStatus('error');
-        setLoading(false);
-        if (pingInterval) {
-          clearInterval(pingInterval);
-        }
       };
 
-      return socket;
+      return ws;
     } catch (error) {
-      console.error('Failed to create WebSocket connection:', error);
+      console.error('Failed to create WebSocket:', error);
       setIsConnected(false);
       setLoading(false);
-      return null;
     }
   };
 
-  // Fetch initial data from consumer API
+  // Fetch initial data
   const fetchInitialData = async () => {
     try {
-      setLoading(true);
-      
-      const [statsResponse, sensorsResponse, healthResponse] = await Promise.all([
-        axios.get(`${API_BASE_URL}/api/dashboard/stats`),
-        axios.get(`${API_BASE_URL}/api/sensors`),
-        axios.get(`${API_BASE_URL}/health`)
+      const [sensorsResponse, suggestionsResponse, historyResponse] = await Promise.all([
+        axios.get('/api/sensors?limit=50'),
+        axios.get('/api/optimization/suggestions'),
+        axios.get('/api/analytics/history?hours=24')
       ]);
 
       setRealTimeData(prev => ({
         ...prev,
-        stats: statsResponse.data,
-        sensors: sensorsResponse.data.sensors || []
+        sensors: sensorsResponse.data.sensors
       }));
 
-      setConsumerHost(healthResponse.data.consumer_host || 'Unknown');
-      setProducerHost(sensorsResponse.data.sensors[0]?.producer_host || 'Unknown');
-
-      console.log('✅ Initial data loaded successfully');
+      setOptimizationSuggestions(suggestionsResponse.data.suggestions);
+      setHistoricalData(historyResponse.data.history);
     } catch (error) {
-      console.error('❌ Error fetching initial data:', error);
-      
-      // Fallback to mock data if API is unavailable
-      if (error.code === 'NETWORK_ERROR' || error.response?.status >= 500) {
-        console.log('🔄 Using mock data as fallback');
-        setRealTimeData(prev => ({
-          ...prev,
-          stats: {
-            total_energy_consumption: 0,
-            total_readings: 0,
-            anomaly_count: 0,
-            average_consumption: 0,
-            status_normal: 0,
-            status_warning: 0,
-            status_critical: 0
-          },
-          sensors: []
-        }));
-      }
-    } finally {
-      setLoading(false);
+      console.error('Error fetching initial data:', error);
     }
   };
 
-  // Fetch sensors data with pagination
+  // Fetch sensors data
   const fetchSensors = async (limit = 100, offset = 0) => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/api/sensors?limit=${limit}&offset=${offset}`);
+      const response = await axios.get(`/api/sensors?limit=${limit}&offset=${offset}`);
       return response.data;
     } catch (error) {
       console.error('Error fetching sensors:', error);
-      return { sensors: [], count: 0 };
+      return { sensors: [], pagination: { total: 0 } };
     }
   };
 
-  // Fetch optimization suggestions (simulated - would come from ML service)
-  const fetchOptimizationSuggestions = async () => {
+  // Fetch optimization suggestions
+  const fetchOptimizationSuggestions = useCallback(async () => {
     try {
-      // Simulate API call to ML optimization service
-      const mockSuggestions = generateMockSuggestions(realTimeData.sensors);
+      const response = await axios.get('/api/optimization/suggestions');
+      setOptimizationSuggestions(response.data.suggestions);
+      return response.data.suggestions;
+    } catch (error) {
+      console.error('Error fetching suggestions:', error);
+      // Provide mock data when API fails
+      const mockSuggestions = [
+        {
+          sensor_id: 'SENSOR_001',
+          device_type: 'Motor',
+          location: 'floor_a',
+          title: 'Schedule Off-Peak Operation',
+          description: 'Shift motor operation to off-peak hours (8 PM - 6 AM) to reduce electricity costs by 25%',
+          priority: 'high',
+          action: 'schedule_shift',
+          potential_savings: 15.50,
+          risk_score: 0.1,
+          timestamp: new Date().toISOString()
+        },
+        {
+          sensor_id: 'SENSOR_002',
+          device_type: 'Compressor',
+          location: 'warehouse',
+          title: 'Maintenance Required',
+          description: 'Compressor showing early signs of wear. Schedule preventive maintenance within 2 weeks.',
+          priority: 'critical',
+          action: 'schedule_maintenance',
+          potential_savings: 8.75,
+          risk_score: 0.8,
+          timestamp: new Date().toISOString()
+        },
+        {
+          sensor_id: 'SENSOR_003',
+          device_type: 'Conveyor',
+          location: 'assembly_line',
+          title: 'Efficiency Audit',
+          description: 'Conveyor system is 15% less efficient than optimal. Investigate equipment calibration.',
+          priority: 'medium',
+          action: 'efficiency_audit',
+          potential_savings: 12.30,
+          risk_score: 0.3,
+          timestamp: new Date().toISOString()
+        },
+        {
+          sensor_id: 'SENSOR_004',
+          device_type: 'Heater',
+          location: 'quality_control',
+          title: 'Temperature Optimization',
+          description: 'Reduce heater temperature by 5°C during non-production hours to save energy.',
+          priority: 'low',
+          action: 'schedule_shift',
+          potential_savings: 6.20,
+          risk_score: 0.1,
+          timestamp: new Date().toISOString()
+        }
+      ];
       setOptimizationSuggestions(mockSuggestions);
       return mockSuggestions;
-    } catch (error) {
-      console.error('Error fetching optimization suggestions:', error);
-      return [];
     }
-  };
+  }, []);
 
-  // Generate mock optimization suggestions based on sensor data
-  const generateMockSuggestions = (sensors) => {
-    if (!sensors || sensors.length === 0) return [];
-
-    const suggestions = [];
-
-    // Analyze sensor data for optimization opportunities
-    sensors.forEach(sensor => {
-      if (sensor.energy_consumption > 10) {
-        suggestions.push({
-          id: `opt-${sensor.sensor_id}-1`,
-          sensor_id: sensor.sensor_id,
-          device_type: sensor.device_type,
-          location: sensor.location,
-          title: 'High Energy Consumption Detected',
-          description: `Consider optimizing ${sensor.device_type} operation during peak hours`,
-          type: 'energy_efficiency',
-          priority: 'high',
-          potential_savings: (sensor.energy_consumption * 0.15).toFixed(2),
-          action: 'schedule_optimization'
-        });
-      }
-
-      if (sensor.temperature > 70) {
-        suggestions.push({
-          id: `opt-${sensor.sensor_id}-2`,
-          sensor_id: sensor.sensor_id,
-          device_type: sensor.device_type,
-          location: sensor.location,
-          title: 'High Temperature Alert',
-          description: `Device temperature is elevated. Consider maintenance or cooling improvement`,
-          type: 'maintenance',
-          priority: 'medium',
-          potential_savings: 'N/A',
-          action: 'schedule_maintenance'
-        });
-      }
-
-      if (sensor.failure_probability > 0.7) {
-        suggestions.push({
-          id: `opt-${sensor.sensor_id}-3`,
-          sensor_id: sensor.sensor_id,
-          device_type: sensor.device_type,
-          location: sensor.location,
-          title: 'High Failure Probability',
-          description: `Predictive maintenance recommended for ${sensor.device_type}`,
-          type: 'predictive_maintenance',
-          priority: 'critical',
-          potential_savings: 'Preventative',
-          action: 'immediate_maintenance'
-        });
-      }
-    });
-
-    return suggestions.slice(0, 10); // Return top 10 suggestions
-  };
-
-  // Fetch historical data (simulated)
+  // Fetch historical data
   const fetchHistoricalData = async (hours = 24) => {
     try {
-      // Simulate historical data based on current readings
-      const mockHistory = generateMockHistoricalData(hours);
-      setHistoricalData(mockHistory);
-      return mockHistory;
+      const response = await axios.get(`/api/analytics/history?hours=${hours}`);
+      setHistoricalData(response.data.history);
+      return response.data.history;
     } catch (error) {
       console.error('Error fetching historical data:', error);
       return [];
     }
   };
 
-  // Generate mock historical data
-  const generateMockHistoricalData = (hours) => {
-    const history = [];
-    const now = new Date();
-    
-    for (let i = hours; i >= 0; i--) {
-      const timestamp = new Date(now.getTime() - i * 60 * 60 * 1000);
-      history.push({
-        timestamp: timestamp.toISOString(),
-        energy_consumption: Math.random() * 100 + 50, // Random between 50-150
-        average_temperature: Math.random() * 30 + 40, // Random between 40-70
-        anomaly_count: Math.floor(Math.random() * 5),
-        active_sensors: Math.floor(Math.random() * 50) + 10 // Random between 10-60
-      });
+  // Control device (simulated)
+  const controlDevice = async (sensorId, action) => {
+    try {
+      // Simulate API call
+      console.log(`Controlling device ${sensorId}: ${action}`);
+      
+      // In a real implementation, this would call the backend API
+      return { success: true, message: `Device ${sensorId} ${action} successfully` };
+    } catch (error) {
+      console.error('Error controlling device:', error);
+      return { success: false, message: 'Failed to control device' };
     }
-    
-    return history;
   };
 
-  // Control device (send command to consumer API)
-  const controlDevice = async (sensorId, action, parameters = {}) => {
+  /** Full sync: dashboard stats + fleet + optimizer (for Refresh / Auto-Optimize). */
+  const refreshOptimizationInsights = useCallback(async () => {
     try {
-      // This would call the consumer API to send commands back to producer if needed
-      const response = await axios.post(`${API_BASE_URL}/api/control`, {
-        sensor_id: sensorId,
-        action: action,
-        parameters: parameters,
-        timestamp: new Date().toISOString()
-      });
-
-      console.log(`✅ Device control command sent: ${sensorId} - ${action}`);
-      return { success: true, message: `Command sent successfully`, data: response.data };
-    } catch (error) {
-      console.error('❌ Error controlling device:', error);
-      return { 
-        success: false, 
-        message: 'Failed to send control command',
-        error: error.response?.data?.detail || error.message 
+      const [statsRes, sensorsRes, suggestionsRes] = await Promise.all([
+        axios.get('/api/dashboard/stats'),
+        axios.get('/api/sensors?limit=500'),
+        axios.get('/api/optimization/suggestions'),
+      ]);
+      const sensors = sensorsRes.data?.sensors || [];
+      setRealTimeData((prev) => ({
+        ...prev,
+        sensors,
+        stats: normalizeDashboardStats({ ...statsRes.data }, sensors),
+      }));
+      const list = suggestionsRes.data?.suggestions || [];
+      setOptimizationSuggestions(list);
+      return {
+        ok: true,
+        generatedAt: suggestionsRes.data?.generated_at ?? null,
+        totalGenerated: suggestionsRes.data?.total_generated ?? list.length,
       };
+    } catch (e) {
+      console.error('refreshOptimizationInsights failed', e);
+      return { ok: false, error: e?.message || 'unknown' };
     }
-  };
-
-  // Manual connection test
-  const testConnection = async () => {
-    try {
-      setLoading(true);
-      const response = await axios.get(`${API_BASE_URL}/health`);
-      setIsConnected(true);
-      setKafkaStatus('connected');
-      return { success: true, data: response.data };
-    } catch (error) {
-      setIsConnected(false);
-      setKafkaStatus('disconnected');
-      return { success: false, error: error.message };
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Refresh all data
-  const refreshData = async () => {
-    await fetchInitialData();
-    await fetchOptimizationSuggestions();
-    await fetchHistoricalData();
-  };
+  }, []);
 
   useEffect(() => {
-    const socket = connectWebSocket();
+    const ws = connectWebSocket();
     fetchInitialData();
 
-    // Set up periodic data refresh
-    const refreshInterval = setInterval(() => {
-      fetchOptimizationSuggestions();
-    }, 30000); // Refresh every 30 seconds
-
     return () => {
-      if (socket) {
-        socket.close();
+      if (ws) {
+        ws.close();
       }
-      clearInterval(refreshInterval);
     };
   }, []);
 
-  // Calculate derived statistics
-  const avgTemperature = realTimeData.sensors.length > 0
-    ? realTimeData.sensors.reduce((sum, sensor) => sum + (sensor.temperature || 0), 0) / realTimeData.sensors.length
-    : 0;
-  const totalPower = realTimeData.sensors.reduce((sum, sensor) => sum + (sensor.current || 0), 0);
-  const derivedStats = {
-    ...realTimeData.stats,
-    // Backward-compatible aliases expected by dashboard cards/components.
-    total_energy: realTimeData.stats.total_energy_consumption || 0,
-    critical_sensors: realTimeData.sensors.filter(s => s.status === 'critical').length,
-    total_sensors: realTimeData.sensors.length,
-    efficiency_score: realTimeData.sensors.length > 0
-      ? (realTimeData.sensors.reduce((sum, sensor) => sum + (sensor.power_factor || 0.9), 0) / realTimeData.sensors.length) * 100
-      : 0,
-    avg_temperature: avgTemperature,
-    total_power: totalPower,
-    totalSensors: realTimeData.sensors.length,
-    criticalSensors: realTimeData.sensors.filter(s => s.status === 'critical').length,
-    warningSensors: realTimeData.sensors.filter(s => s.status === 'warning').length,
-    normalSensors: realTimeData.sensors.filter(s => s.status === 'normal').length,
-    averageEfficiency: realTimeData.sensors.length > 0 
-      ? realTimeData.sensors.reduce((sum, sensor) => sum + (sensor.power_factor || 0.9), 0) / realTimeData.sensors.length 
-      : 0,
-    totalCost: (realTimeData.stats.total_energy_consumption || 0) * 0.12 // Assuming $0.12 per kWh
-  };
+  // Keep stats, sensors, and optimization suggestions aligned with Redis even if WebSocket
+  // payloads are sparse or the page loaded before data existed.
+  useEffect(() => {
+    const syncFromApi = async () => {
+      try {
+        const [statsRes, sensorsRes, suggestionsRes] = await Promise.all([
+          axios.get('/api/dashboard/stats'),
+          axios.get('/api/sensors?limit=500'),
+          axios.get('/api/optimization/suggestions'),
+        ]);
+        setRealTimeData((prev) => ({
+          ...prev,
+          sensors: sensorsRes.data.sensors || prev.sensors,
+          stats: normalizeDashboardStats({ ...prev.stats, ...statsRes.data }, sensorsRes.data.sensors || prev.sensors),
+        }));
+        if (suggestionsRes.data?.suggestions) {
+          setOptimizationSuggestions(suggestionsRes.data.suggestions);
+        }
+      } catch (e) {
+        console.error('API sync failed:', e);
+      }
+    };
+
+    syncFromApi();
+    const id = setInterval(syncFromApi, 8000);
+    return () => clearInterval(id);
+  }, []);
 
   const value = {
-    // Data
-    realTimeData: {
-      ...realTimeData,
-      stats: derivedStats
-    },
+    realTimeData,
     optimizationSuggestions,
     historicalData,
-    
-    // Status
     isConnected,
     loading,
-    kafkaStatus,
-    consumerHost,
-    producerHost,
-    
-    // API functions
     fetchSensors,
     fetchOptimizationSuggestions,
+    refreshOptimizationInsights,
     fetchHistoricalData,
     controlDevice,
-    testConnection,
-    refreshData,
-    
-    // Connection management
-    connectWebSocket,
-    API_BASE_URL
+    connectWebSocket
   };
 
   return (

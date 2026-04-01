@@ -19,6 +19,17 @@ class EnergyOptimizer:
             return []
         
         df = pd.DataFrame(sensors_data)
+        for col, default in (
+            ('failure_probability', 0.0),
+            ('is_anomaly', False),
+            ('energy_consumption', 0.0),
+            ('status', 'normal'),
+        ):
+            if col not in df.columns:
+                df[col] = default
+        df['energy_consumption'] = pd.to_numeric(df['energy_consumption'], errors='coerce').fillna(0)
+        df['failure_probability'] = pd.to_numeric(df['failure_probability'], errors='coerce').fillna(0)
+
         suggestions = []
         current_hour = datetime.now().hour
         current_time = datetime.now()
@@ -44,16 +55,20 @@ class EnergyOptimizer:
     
     def _generate_peak_suggestions(self, df: pd.DataFrame, current_hour: int) -> List[Dict]:
         suggestions = []
-        
+        if df['energy_consumption'].sum() <= 0:
+            return suggestions
+        n = len(df)
+        k = max(1, int(np.ceil(n * 0.25)))
+        high_consumption = df.nlargest(k, 'energy_consumption')
+
         if current_hour in self.peak_hours:
-            high_consumption = df[df['energy_consumption'] > df['energy_consumption'].quantile(0.75)]
-            
             for _, sensor in high_consumption.iterrows():
-                if sensor['failure_probability'] < 0.4:  # Only suggest for reliable equipment
-                    hourly_consumption = sensor['energy_consumption']
-                    potential_savings = hourly_consumption * (self.energy_rates['on_peak'] - self.energy_rates['off_peak'])
-                    
-                    if potential_savings > 0.5:  # Only suggest if meaningful savings
+                if sensor['failure_probability'] < 0.4:
+                    hourly_consumption = float(sensor['energy_consumption'] or 0)
+                    potential_savings = hourly_consumption * (
+                        self.energy_rates['on_peak'] - self.energy_rates['off_peak']
+                    )
+                    if potential_savings > 0.05:
                         suggestions.append({
                             'type': 'cost_optimization',
                             'sensor_id': sensor['sensor_id'],
@@ -63,12 +78,35 @@ class EnergyOptimizer:
                             'description': f"Move {sensor['device_type']} operation to save on energy costs",
                             'current_cost': round(hourly_consumption * self.energy_rates['on_peak'], 2),
                             'potential_savings': round(potential_savings, 2),
-                            'savings_per_day': round(potential_savings * 8, 2),  # 8 peak hours
+                            'savings_per_day': round(potential_savings * 8, 2),
                             'priority': 'high' if potential_savings > 2 else 'medium',
                             'action': 'schedule_shift',
                             'icon': '💰'
                         })
-        
+        else:
+            # Outside on-peak window: still estimate $/h if load moved to cheaper periods (demo-friendly).
+            for _, sensor in high_consumption.iterrows():
+                if sensor['failure_probability'] < 0.5:
+                    hourly_consumption = float(sensor['energy_consumption'] or 0)
+                    potential_savings = hourly_consumption * (
+                        self.energy_rates['shoulder'] - self.energy_rates['off_peak']
+                    )
+                    if potential_savings > 0.05:
+                        suggestions.append({
+                            'type': 'cost_optimization',
+                            'sensor_id': sensor['sensor_id'],
+                            'device_type': sensor['device_type'],
+                            'location': sensor['location'],
+                            'title': 'Shift Load to Off-Peak',
+                            'description': f"Schedule {sensor['device_type']} for lower-rate windows",
+                            'current_cost': round(hourly_consumption * self.energy_rates['shoulder'], 2),
+                            'potential_savings': round(potential_savings, 2),
+                            'savings_per_day': round(potential_savings * 6, 2),
+                            'priority': 'medium',
+                            'action': 'schedule_shift',
+                            'icon': '💰'
+                        })
+
         return suggestions
     
     def _generate_maintenance_suggestions(self, df: pd.DataFrame) -> List[Dict]:
@@ -77,6 +115,8 @@ class EnergyOptimizer:
         
         for _, sensor in high_risk.iterrows():
             risk_factor = sensor['failure_probability']
+            hourly_energy = float(sensor.get('energy_consumption', 0) or 0)
+            potential_savings = round(max(0.5, risk_factor * hourly_energy * self.energy_rates['on_peak']), 2)
             suggestions.append({
                 'type': 'predictive_maintenance',
                 'sensor_id': sensor['sensor_id'],
@@ -85,6 +125,7 @@ class EnergyOptimizer:
                 'title': 'Schedule Preventive Maintenance',
                 'description': 'High failure probability detected - recommend immediate inspection',
                 'risk_score': round(risk_factor, 3),
+                'potential_savings': potential_savings,
                 'urgency': 'critical' if risk_factor > 0.85 else 'high',
                 'factors': self._identify_risk_factors(sensor),
                 'priority': 'critical',
@@ -96,11 +137,15 @@ class EnergyOptimizer:
     
     def _generate_efficiency_suggestions(self, df: pd.DataFrame) -> List[Dict]:
         suggestions = []
-        avg_consumption = df['energy_consumption'].mean()
+        avg_consumption = float(df['energy_consumption'].mean() or 0)
+        if avg_consumption <= 0:
+            return suggestions
         inefficient = df[df['energy_consumption'] > avg_consumption * self.efficiency_threshold]
         
         for _, sensor in inefficient.iterrows():
             efficiency_ratio = sensor['energy_consumption'] / avg_consumption
+            excess_kwh = max(0, float(sensor['energy_consumption']) - float(avg_consumption))
+            potential_savings = round(max(0.5, excess_kwh * self.energy_rates['shoulder']), 2)
             suggestions.append({
                 'type': 'energy_efficiency',
                 'sensor_id': sensor['sensor_id'],
@@ -111,6 +156,7 @@ class EnergyOptimizer:
                 'current_consumption': round(sensor['energy_consumption'], 2),
                 'average_consumption': round(avg_consumption, 2),
                 'efficiency_ratio': round(efficiency_ratio, 2),
+                'potential_savings': potential_savings,
                 'priority': 'medium',
                 'action': 'efficiency_audit',
                 'icon': '⚡'
@@ -121,12 +167,16 @@ class EnergyOptimizer:
     def _generate_operational_suggestions(self, df: pd.DataFrame, current_time: datetime) -> List[Dict]:
         suggestions = []
         
-        # Suggest shutdown for low-usage equipment during off-hours
+        if df['energy_consumption'].sum() <= 0:
+            return suggestions
+        # Low usage vs fleet (relative), not absolute kWh — avoids never matching real data.
+        low_cutoff = float(df['energy_consumption'].quantile(0.15))
+        low_usage = df[df['energy_consumption'] <= max(low_cutoff, 1e-6)]
+
         if current_time.hour < 6 or current_time.hour > 20:  # Night hours
-            low_usage = df[df['energy_consumption'] < 0.5]  # Very low consumption
-            
             for _, sensor in low_usage.iterrows():
                 if sensor['device_type'] in ['pump', 'cooling_tower', 'conveyor']:
+                    ec = float(sensor['energy_consumption'] or 0)
                     suggestions.append({
                         'type': 'operational_optimization',
                         'sensor_id': sensor['sensor_id'],
@@ -134,12 +184,30 @@ class EnergyOptimizer:
                         'location': sensor['location'],
                         'title': 'Consider Night Shutdown',
                         'description': 'Low usage equipment can be shut down during off-hours',
-                        'current_consumption': round(sensor['energy_consumption'], 2),
-                        'potential_savings': round(sensor['energy_consumption'] * 10, 2),  # 10 night hours
+                        'current_consumption': round(ec, 2),
+                        'potential_savings': round(max(0.5, ec * self.energy_rates['off_peak'] * 8), 2),
                         'priority': 'low',
                         'action': 'schedule_shutdown',
                         'icon': '🌙'
                     })
+        else:
+            # Daytime: cap idle-load hints so the list stays readable.
+            day_candidates = low_usage.nsmallest(5, 'energy_consumption')
+            for _, sensor in day_candidates.iterrows():
+                ec = float(sensor['energy_consumption'] or 0)
+                suggestions.append({
+                    'type': 'operational_optimization',
+                    'sensor_id': sensor['sensor_id'],
+                    'device_type': sensor['device_type'],
+                    'location': sensor['location'],
+                    'title': 'Review Idle Load',
+                    'description': 'Low relative consumption — candidate for standby reduction',
+                    'current_consumption': round(ec, 2),
+                    'potential_savings': round(max(0.35, ec * self.energy_rates['shoulder'] * 4), 2),
+                    'priority': 'low',
+                    'action': 'efficiency_audit',
+                    'icon': '⚡'
+                })
         
         return suggestions
     

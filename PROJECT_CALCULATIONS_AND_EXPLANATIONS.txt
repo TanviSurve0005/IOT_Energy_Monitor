@@ -1,0 +1,406 @@
+================================================================================
+  IoT ENERGY MONITOR — CALCULATIONS & EXPLANATIONS (JUDGE / DEMO REFERENCE)
+================================================================================
+This document lists formulas and logic implemented in code (backend + frontend)
+as of the project state when this file was generated. Use it to explain VoltAI’s
+reasoning, thresholds, and derived metrics to judges.
+
+--------------------------------------------------------------------------------
+1. DATA FLOW (WHERE NUMBERS COME FROM)
+--------------------------------------------------------------------------------
+
+1.1 Sensor simulator / Kafka producer (backend/src/data_simulator/sensor_simulator.py
+    and backend/src/kafka/producer.py)
+
+    Each interval produces one reading per sensor with:
+    - current (A), temperature (°C), pressure (bar), voltage (V), vibration (mm/s)
+    - power_factor (dimensionless, ~0.85–0.95)
+    - energy_consumption (kWh for that sampling interval — see §2)
+    - Per-sensor baselines: rated_current (A), nominal_voltage (V, typically 220),
+      operating_pressure (bar), energy_baseline_kwh (kWh)
+
+    Raw physics are then passed through apply_threshold_classification() (see §3).
+
+
+1.2 Stream processor (backend/src/stream_processor/processor.py)
+
+    For each Kafka message, in order:
+    (a) Rule-based thresholds → status, threshold_bands, is_anomaly (operational)
+    (b) Isolation Forest on [current, temperature, pressure] → ml_anomaly flag
+    (c) anomaly_score from the model’s decision_function
+    (d) failure_probability from bands + ML (see §5)
+    (e) Redis: sensor:{id} TTL 600s; dashboard:stats total_energy += energy_consumption
+
+
+1.3 API (backend/src/api/main.py)
+
+    Aggregates Redis sensor keys for dashboard stats and optimization suggestions.
+
+
+--------------------------------------------------------------------------------
+2. ENERGY PER INTERVAL (SIMULATOR)
+--------------------------------------------------------------------------------
+
+Formula used in code:
+
+    energy_consumption (kWh) = current × voltage / 1000 × power_factor
+
+Interpretation:
+- Treats each published point as an interval energy consistent with apparent power
+  derived from line voltage, current, and power factor (single-phase style proxy).
+- Not a full industrial billing model; it is a consistent scalar for comparing
+  sensors and driving % vs baseline bands.
+
+Per-sensor energy baseline (at init):
+
+    energy_baseline_kwh ≈ (base_current × nominal_voltage / 1000) × (0.55 … 0.75)
+
+So “typical” load is modeled as a fraction of the rough nameplate-style term.
+
+--------------------------------------------------------------------------------
+3. THRESHOLD BANDS — PER-METRIC CLASSIFICATION
+--------------------------------------------------------------------------------
+Source: backend/src/sensor_thresholds.py
+
+Each metric is classified into one of: LOW, MEDIUM, HIGH, CRITICAL using chained
+comparisons (if / elif) against fixed edges or percentage-of-baseline values.
+
+3.1 Temperature (°C) — absolute
+
+    if T < 20        → LOW       (idle / cold)
+    elif T < 60      → MEDIUM    (normal operating band)
+    elif T < 80      → HIGH      (warning / elevated)
+    else             → CRITICAL  (overheating risk)
+
+3.2 Current — percent of rated current
+
+    load_pct = 100 × (current_A / rated_current_A)
+
+    if load_pct < 40%   → LOW       (light load)
+    elif load_pct < 70% → MEDIUM
+    elif load_pct < 90% → HIGH      (elevated load)
+    else                → CRITICAL (overload risk vs rated)
+
+3.3 Voltage — ratio to nominal (IEC-style window)
+
+    r = voltage_V / nominal_voltage_V
+
+    if r < 0.85 OR r > 1.20           → CRITICAL (danger zone)
+    elif r < 0.90                     → LOW (mild undervoltage band)
+    elif r ≤ 1.10                     → MEDIUM (nominal window)
+    elif r ≤ 1.20                     → HIGH
+    else                              → CRITICAL
+
+3.4 Vibration — mm/s (ISO 10816–style edges in code)
+
+    if v < 1.8        → LOW
+    elif v < 4.5      → MEDIUM
+    elif v < 7.1      → HIGH
+    else              → CRITICAL
+
+3.5 Energy — percent of per-sensor baseline kWh
+
+    energy_pct = 100 × (energy_consumption_kWh / energy_baseline_kWh)
+
+    if energy_pct < 70%    → LOW
+    elif energy_pct < 110% → MEDIUM
+    elif energy_pct < 130% → HIGH
+    else                   → CRITICAL
+
+3.6 Pressure — percent of operating setpoint (bar)
+
+    pressure_pct = 100 × (pressure_bar / operating_pressure_bar)
+
+    if pressure_pct < 60%    → LOW
+    elif pressure_pct < 100% → MEDIUM
+    elif pressure_pct < 120% → HIGH
+    else                     → CRITICAL
+
+--------------------------------------------------------------------------------
+4. DERIVED RATIOS STORED ON EACH READING (FOR DISPLAY / DEBUG)
+--------------------------------------------------------------------------------
+
+    current_load_pct      = 100 × current / rated_current
+    voltage_ratio_nominal = voltage / nominal_voltage
+    energy_ratio_pct      = 100 × energy_consumption / energy_baseline_kwh
+    pressure_ratio_pct    = 100 × pressure / operating_pressure
+
+--------------------------------------------------------------------------------
+5. DEFAULT BASELINES IF FIELDS ARE MISSING (RESILIENT PATH)
+--------------------------------------------------------------------------------
+Source: _defaults_from_reading() in sensor_thresholds.py
+
+When a message lacks explicit baselines (e.g. legacy data), the code infers:
+
+    rated_current      ← from message, or max(current × 1.25, 1.0)
+    nominal_voltage    ← from message, or 220
+    operating_pressure ← from message, or max(pressure × 1.2, 1.0)
+    energy_baseline_kwh← from message, or max(energy_consumption × 0.95, tiny epsilon)
+
+Judges should know: inferred baselines can change classification vs a fully
+configured asset model — production systems should always send explicit baselines.
+
+--------------------------------------------------------------------------------
+6. OPERATIONAL STATUS (normal / warning / critical) FROM BANDS
+--------------------------------------------------------------------------------
+Source: _metric_alert_severity() + _aggregate_operational_status()
+
+The UI status is NOT “any CRITICAL word anywhere.” It uses per-metric semantics:
+
+- Band CRITICAL → severity 2 (always escalates overall status to critical).
+- Band HIGH     → severity 1 (warning) unless something is already critical.
+- Band MEDIUM   → no alert contribution.
+- Band LOW:
+  - temperature_c, current_pct_rated, energy_vs_baseline, vibration_mm_s → 0
+    (idle / light load / under-baseline / good vibration are not faults).
+  - voltage LOW (85–90% nominal band in classifier) → warning (1).
+  - pressure LOW (<60% of operating) → warning (1).
+
+Overall:
+
+    worst_severity = max(severity per metric)
+    if worst_severity ≥ 2 → status = "critical"
+    elif worst_severity = 1 → status = "warning"
+    else → status = "normal"
+
+Rule-based is_anomaly is true when status is warning or critical.
+
+--------------------------------------------------------------------------------
+7. MACHINE LEARNING ANOMALY (STREAM PROCESSOR)
+--------------------------------------------------------------------------------
+
+7.1 Features
+
+    x = [current, temperature, pressure]  (single row, 3 features)
+
+7.2 Scaling
+
+    StandardScaler: fit incrementally from the first sample onward; each batch
+    is transformed before the Isolation Forest.
+
+7.3 Isolation Forest
+
+    sklearn.ensemble.IsolationForest(contamination=0.1, n_estimators=100)
+    Trained once on synthetic “normal” multivariate normal samples at startup.
+
+    ml_anomaly = True if predict(x_scaled) == -1 (outlier).
+
+7.4 Anomaly score
+
+    anomaly_score = decision_function(x_scaled)
+    (More negative often means “more anomalous” in isolation forest convention;
+     stored rounded to 4 decimals.)
+
+This ML flag is stored as ml_anomaly and does NOT replace rule-based status;
+it supplements diagnostics (failure risk uses it — see §8).
+
+--------------------------------------------------------------------------------
+8. FAILURE PROBABILITY (0 … 1)
+--------------------------------------------------------------------------------
+Source: StreamProcessor._calculate_failure_probability()
+
+Step A — worst band rank across the six threshold bands:
+
+    rank map: LOW=0, MEDIUM=1, HIGH=2, CRITICAL=3
+    worst = maximum rank among the six band strings
+
+    base_score mapping from worst:
+        0 → 0.05
+        1 → 0.18
+        2 → 0.42
+        3 → 0.68
+
+Step B — align with operational status:
+
+    if status == "critical" → base_score = max(base_score, 0.55)
+    if status == "warning"  → base_score = max(base_score, 0.28)
+
+Step C — ML outlier boost:
+
+    if ml_anomaly:
+        base_score += max(0, (anomaly_score + 0.1) × 0.25)
+
+Step D — cap:
+
+    failure_probability = min(base_score, 1.0)
+
+Interpretation for judges:
+- Combines “how bad are the rule bands?” with “did ML think this point is odd?”
+- Displayed as Failure Risk % = failure_probability × 100.
+
+--------------------------------------------------------------------------------
+9. DASHBOARD STATS (API: /api/dashboard/stats)
+--------------------------------------------------------------------------------
+
+From Redis hash dashboard:stats (incremented by stream processor):
+
+    total_energy_consumption = total_energy   (sum of interval kWh across readings)
+    total_readings           = message count
+    average_consumption      = total_energy / max(total_readings, 1)
+
+Live anomaly_count (aligned with rule-based health):
+
+    anomaly_count = number of sensors whose status ∈ {critical, warning}
+
+(Older hash fields status_normal / warning / critical may exist but live count
+is recomputed from current sensor JSON.)
+
+--------------------------------------------------------------------------------
+10. OPTIMIZATION ENGINE — POTENTIAL SAVINGS & SELECTION
+--------------------------------------------------------------------------------
+Source: backend/src/ml_models/optimizer.py
+
+10.1 Tariff placeholders ($/kWh)
+
+    off_peak  = 0.08
+    shoulder  = 0.12
+    on_peak   = 0.18
+
+10.2 Peak window
+
+    peak_hours = 9 … 17 (local hour)
+
+10.3 Cost / shift suggestions
+
+    Target group: top 25% of sensors by energy_consumption (nlargest ceil(25%)).
+
+    If hour in peak_hours and failure_probability < 0.4:
+        potential_savings ($/h) ≈ hourly_kWh × (on_peak − off_peak)
+        current_cost ≈ hourly_kWh × on_peak
+        savings_per_day ≈ potential_savings × 8
+
+    Else (off-peak window), failure_probability < 0.5:
+        potential_savings ≈ hourly_kWh × (shoulder − off_peak)
+        (Demo-friendly off-peak messaging.)
+
+    Small savings rows are filtered out if potential_savings ≤ 0.05.
+
+10.4 Predictive maintenance
+
+    Sensors with failure_probability > 0.7:
+
+        potential_savings = max(0.5, failure_probability × hourly_energy × on_peak)
+
+10.5 Efficiency (fleet-relative)
+
+    avg_consumption = mean(energy_consumption) over all sensors in Redis snapshot
+    Flag sensors with energy_consumption > 1.3 × avg (30% above fleet mean)
+
+        excess_kWh = max(0, sensor_energy − avg)
+        potential_savings = max(0.5, excess_kWh × shoulder)
+
+10.6 Operational (idle / night)
+
+    low_cutoff = 15th percentile of energy_consumption
+    low_usage = sensors at or below that cutoff
+
+    Night (hour < 6 or hour > 20), device in {pump, cooling_tower, conveyor}:
+        potential_savings ≈ max(0.5, energy × off_peak × 8)
+
+    Daytime: up to 5 lowest-energy sensors in that low tail:
+        potential_savings ≈ max(0.35, energy × shoulder × 4)
+
+Suggestions are sorted by priority (critical < high < medium < low) and truncated.
+
+--------------------------------------------------------------------------------
+11. ANALYTICS HISTORY (API: /api/analytics/history) — SYNTHETIC SERIES
+--------------------------------------------------------------------------------
+
+Not measured historical replay; it builds a smooth demo curve from Redis:
+
+    base_energy = total_energy / total_readings  (or 120 if zero)
+
+Every 5 minutes from start to end of range:
+
+    minute_factor = minute_of_timestamp / 60
+    energy_point = base_energy × (0.85 + 0.3 × minute_factor)
+    efficiency_score_point = 75 + int(20 × minute_factor)
+
+Last 100 points returned. Explain to judges as “illustrative trend,” not raw logs.
+
+--------------------------------------------------------------------------------
+12. FRONTEND — EFFICIENCY SCORE
+--------------------------------------------------------------------------------
+Source: frontend/src/utils/efficiencyScore.js
+
+Inputs: API stats object + current sensors array.
+
+Per-sensor counts:
+    normal / warning / critical from status
+    anomaly count: sensors with is_anomaly === true
+
+Status-weighted component:
+
+    statusWeighted = (normal×99 + warning×95 + critical×90) / n
+
+Anomaly dampening:
+
+    anomalyRatio = anomaly_count / n
+    anomalyPenalty = min(6, anomalyRatio × 10)
+    computed = statusWeighted − anomalyPenalty
+
+Blend with API value if present:
+
+    If stats has a positive efficiency_score:
+        baseline = 0.35 × explicit + 0.65 × computed
+    Else:
+        baseline = computed
+
+Final display:
+
+    clamp to [90, 99.8], round to 1 decimal
+
+Purpose: keep a realistic “high 90s” operational score that still moves when
+warnings/criticals and anomalies rise.
+
+--------------------------------------------------------------------------------
+13. FRONTEND — NORMALIZED STATS (EnergyContext)
+--------------------------------------------------------------------------------
+
+Derived for dashboard consistency when API field names differ:
+
+    avg_temperature: mean of finite sensor temperatures (or API field)
+    avg_power: mean current (labeled power context) or sum depending on field
+    total_power: sum of currents if needed
+    critical_sensors / warning_sensors: max(API, live count from sensors)
+    anomaly_count: reconciles API anomaly_count with count of abnormal statuses
+
+--------------------------------------------------------------------------------
+14. FRONTEND — FACTORY MAP “HEALTH %”
+--------------------------------------------------------------------------------
+Source: frontend/src/components/AnomalyMap.jsx
+
+Per zone:
+
+    health = round( ((normal + warning×0.55) / total) × 100 ), clamped 0–100
+
+Overall:
+
+    overallHealth = round( ((totalNormal + totalWarning×0.55) / totalSensors) × 100 )
+
+Interpretation: warnings count as partial credit (55%) vs normal (100%); critical
+sensors in a zone drive the zone state to Critical first (logic separate from %).
+
+--------------------------------------------------------------------------------
+15. API DISCOVERY ENDPOINT
+--------------------------------------------------------------------------------
+
+GET /api/thresholds/spec returns JSON describing band edges and labels for the
+six metric families (matches sensor_thresholds.thresholds_spec()).
+
+--------------------------------------------------------------------------------
+16. FILE INDEX (WHERE TO LOOK IN CODE)
+--------------------------------------------------------------------------------
+
+    backend/src/sensor_thresholds.py       — All band math + status aggregation
+    backend/src/stream_processor/processor.py — ML anomaly + failure_probability
+    backend/src/ml_models/optimizer.py     — Optimization $/h style suggestions
+    backend/src/api/main.py                — Stats, analytics history, suggestions
+    backend/src/data_simulator/sensor_simulator.py — Synthetic readings + energy
+    frontend/src/utils/efficiencyScore.js  — Dashboard efficiency number
+    frontend/src/context/EnergyContext.jsx — Stat normalization
+    frontend/src/components/AnomalyMap.jsx — Zone health %
+
+================================================================================
+END OF DOCUMENT
+================================================================================
