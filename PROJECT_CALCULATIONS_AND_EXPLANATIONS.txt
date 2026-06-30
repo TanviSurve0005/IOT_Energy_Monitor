@@ -9,8 +9,7 @@ reasoning, thresholds, and derived metrics to judges.
 1. DATA FLOW (WHERE NUMBERS COME FROM)
 --------------------------------------------------------------------------------
 
-1.1 Sensor simulator / Kafka producer (backend/src/data_simulator/sensor_simulator.py
-    and backend/src/kafka/producer.py)
+1.1 Sensor simulator / Kafka producer (backend/src/data_simulator/sensor_simulator.py)
 
     Each interval produces one reading per sensor with:
     - current (A), temperature (°C), pressure (bar), voltage (V), vibration (mm/s)

@@ -21,7 +21,7 @@ how the UI displays the results.
 ======================================================================
 Data source:
 • backend/src/data_simulator/sensor_simulator.py (generates per-sensor readings)
-• backend/src/kafka/producer.py (publishes readings to Kafka)
+• backend/src/data_simulator/sensor_simulator.py (generates readings and publishes to Kafka)
 
 Stream processing:
 • backend/src/stream_processor/processor.py

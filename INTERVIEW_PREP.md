@@ -176,10 +176,7 @@ backend/
 ├── run_api.py               # Entry: starts FastAPI (uvicorn)
 └── src/
     ├── data_simulator/
-    │   └── sensor_simulator.py   # 300-sensor telemetry generator
-    ├── kafka/
-    │   ├── producer.py           # Alternate producer (HOST_IP broker default)
-    │   └── consumer.py           # Wrapper (unused in live pipeline)
+    │   └── sensor_simulator.py   # 300-sensor telemetry generator + Kafka producer
     ├── stream_processor/
     │   └── processor.py          # Core: consume → classify → ML → Redis
     ├── ml_models/

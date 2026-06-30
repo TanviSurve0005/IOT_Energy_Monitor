@@ -98,8 +98,7 @@ IOT-Energy-monitor/
 │   ├── run_consumer.py          # Stream processor entrypoint
 │   ├── run_api.py               # FastAPI entrypoint
 │   └── src/
-│       ├── data_simulator/      # 300-sensor telemetry generator
-│       ├── kafka/               # Producer & consumer config
+│       ├── data_simulator/      # 300-sensor telemetry generator + Kafka publish
 │       ├── stream_processor/    # Thresholds + ML + Redis writes
 │       ├── ml_models/           # Tariff-aware optimization engine
 │       ├── sensor_thresholds.py # Research-aligned band definitions
