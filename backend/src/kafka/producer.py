@@ -153,6 +153,12 @@ class SensorSimulator:
         anomaly_chance = random.random()
         
         nominal = sensor['nominal_voltage']
+        # Baseline must scale with the same day/night multiplier used for this reading.
+        # Otherwise “normal” operation can be misclassified into ENERGY CRITICAL.
+        energy_baseline_kwh_live = round(
+            (sensor['base_current'] * nominal / 1000.0) * time_multiplier * 1.05,
+            4
+        )
         if anomaly_chance < 0.02:  # 2% severe excursion
             current = sensor['base_current'] * random.uniform(1.8, 3.0) * time_multiplier
             temperature = sensor['base_temp'] * random.uniform(1.5, 2.5) * time_multiplier
@@ -191,7 +197,7 @@ class SensorSimulator:
             'rated_current': sensor['rated_current'],
             'nominal_voltage': sensor['nominal_voltage'],
             'operating_pressure': sensor['operating_pressure'],
-            'energy_baseline_kwh': sensor['energy_baseline_kwh'],
+            'energy_baseline_kwh': energy_baseline_kwh_live,
         }
         return apply_threshold_classification(reading)
     

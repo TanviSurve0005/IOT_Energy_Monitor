@@ -1,0 +1,342 @@
+VOLTAI — TECHNICAL JUDGE PITCH SCRIPT (END-TO-END)
+Estimated duration: 8–12 minutes
+
+======================================================================
+0) OPENING (20–30 seconds)
+======================================================================
+Good [morning/afternoon]. My name is [Your Name]. Today I’m presenting
+VOLTAI, an IoT Energy Monitor that turns live sensor streams into:
+1) research-aligned health states for equipment, and
+2) optimization recommendations with explainable calculations.
+
+The system is built as an end-to-end data pipeline:
+Simulator → Kafka → Stream Processor (rules + ML) → Redis → FastAPI → React UI.
+
+My pitch will focus on the technical logic: exactly how we classify bands,
+how we compute failure risk, how the optimizer estimates $/hour savings, and
+how the UI displays the results.
+
+======================================================================
+1) ARCHITECTURE OVERVIEW (60–90 seconds)
+======================================================================
+Data source:
+• backend/src/data_simulator/sensor_simulator.py (generates per-sensor readings)
+• backend/src/kafka/producer.py (publishes readings to Kafka)
+
+Stream processing:
+• backend/src/stream_processor/processor.py
+  - consumes from Kafka topic: 'sensor-data'
+  - applies threshold classification to each reading
+  - runs Isolation Forest for anomaly detection
+  - computes failure_probability
+  - stores latest state in Redis with TTL
+
+API layer:
+• backend/src/api/main.py (FastAPI)
+  - /api/sensors and /api/sensors/{sensor_id}
+  - /api/dashboard/stats (live aggregated KPIs)
+  - /api/optimization/suggestions (optimizer output)
+  - /api/analytics/history (chart series)
+  - /api/thresholds/spec (band definitions for explainability)
+
+Frontend:
+• React renders real-time dashboards, sensor cards, alerts,
+  optimization suggestions, and analytics charts.
+
+======================================================================
+2) ENERGY COMPUTATION (kWh per reading) (60 seconds)
+======================================================================
+The simulator computes interval energy consumption using:
+
+energy_consumption_kWh = current_A × voltage_V / 1000 × power_factor
+
+Where power_factor is a modeled multiplier (~0.85–0.95) and the result is stored
+as 'energy_consumption' in the stream payload.
+
+Why this matters:
+The rest of the system uses energy as a comparable metric across sensors.
+We also compute energy bands as a percentage versus a baseline.
+
+Baseline design (important for judge correctness):
+We model a per-sensor baseline 'energy_baseline_kwh' so energy bands reflect
+relative inefficiency rather than absolute magnitude.
+Additionally, we scale baseline with the same day/night time multiplier as the
+reading to prevent systematic bias (otherwise many sensors can be incorrectly
+flagged as energy CRITICAL during certain time windows).
+
+======================================================================
+3) RESEARCH-ALIGNED THRESHOLD BANDS (2 minutes)
+======================================================================
+The core explainability layer lives in:
+backend/src/sensor_thresholds.py
+
+Pattern for each metric:
+• if value < low_bound → LOW
+• elif value < medium_upper → MEDIUM
+• elif value < high_upper → HIGH
+• else → CRITICAL
+
+We implement this using fixed research edges for temperature, vibration, voltage,
+and percentage-of-baseline rules for current, energy, and pressure.
+
+3.1 Temperature (°C) — absolute banding
+LOW:      T < 20
+MEDIUM:   20 ≤ T < 60
+HIGH:     60 ≤ T < 80
+CRITICAL: T ≥ 80
+
+3.2 Current / Load — percentage of rated current
+load_pct = 100 × (current_A / rated_current_A)
+
+LOW:      load_pct < 40
+MEDIUM:   40 ≤ load_pct < 70
+HIGH:     70 ≤ load_pct < 90
+CRITICAL: load_pct ≥ 90
+
+3.3 Voltage (V) — ratio to nominal (IEC-style danger window)
+voltage_ratio = voltage_V / nominal_voltage_V
+
+CRITICAL: voltage_ratio < 0.85 OR voltage_ratio > 1.20
+LOW:      voltage_ratio < 0.90
+MEDIUM:   0.90 ≤ voltage_ratio ≤ 1.10
+HIGH:     1.10 < voltage_ratio ≤ 1.20
+
+3.4 Vibration (mm/s) — ISO 10816 style edges
+LOW:      v < 1.8
+MEDIUM:   1.8 ≤ v < 4.5
+HIGH:     4.5 ≤ v < 7.1
+CRITICAL: v ≥ 7.1
+
+3.5 Energy (kWh) — percentage vs baseline
+energy_pct = 100 × (energy_consumption_kWh / energy_baseline_kwh)
+
+LOW:      energy_pct < 70
+MEDIUM:   70 ≤ energy_pct < 110
+HIGH:     110 ≤ energy_pct < 130
+CRITICAL: energy_pct ≥ 130
+
+3.6 Pressure (bar) — percentage vs operating setpoint
+pressure_pct = 100 × (pressure_bar / operating_pressure_bar)
+
+LOW:      pressure_pct < 60
+MEDIUM:   60 ≤ pressure_pct < 100
+HIGH:     100 ≤ pressure_pct < 120
+CRITICAL: pressure_pct ≥ 120
+
+3.7 Overall status logic (normal / warning / critical)
+The system does NOT simply say:
+"if any metric is CRITICAL then whole sensor is critical".
+Instead we map each metric’s band to a severity contribution.
+
+Key domain rule to avoid false alarms:
+• temperature LOW (<20°C) means idle/underutilized, not overheating.
+Similarly:
+• current LOW means light load (not overload),
+• energy LOW means under-baseline operation,
+• vibration LOW/MEDIUM are acceptable.
+
+We compute:
+worst_severity = max(severity_contribution across metrics)
+status = critical if worst_severity ≥ 2
+         warning  if worst_severity ≥ 1
+         normal   otherwise
+
+This is why a sensor can be "cold" yet not be CRITICAL unless other
+metrics indicate genuine risk (voltage danger, pressure extremes, energy
+inefficiency spike, high vibration, or high temperature).
+
+======================================================================
+4) ML ANOMALY DETECTION (Isolation Forest) (90 seconds)
+======================================================================
+In backend/src/stream_processor/processor.py we train and run:
+sklearn.ensemble.IsolationForest
+
+Features:
+X = [current, temperature, pressure]
+
+Preprocessing:
+• StandardScaler fitted incrementally (partial_fit on first sample)
+
+Isolation Forest outputs:
+• is_anomaly = True if model.predict(x_scaled) == -1
+• anomaly_score = decision_function(x_scaled)
+
+Important:
+This ML anomaly is stored as ml_anomaly / anomaly_score and is used to
+boost failure risk—not to override rule-based status directly.
+That makes the explanation consistent: we show band reasons plus ML support.
+
+======================================================================
+5) FAILURE RISK SCORING (0–100%) (90 seconds)
+======================================================================
+Failure probability is computed from:
+1) worst threshold band across all metrics
+2) operational status floor
+3) ML outlier boost
+
+5.1 Worst band rank
+Rank mapping:
+LOW=0, MEDIUM=1, HIGH=2, CRITICAL=3
+worst = max(rank across bands)
+
+Base score mapping:
+worst=0 → 0.05
+worst=1 → 0.18
+worst=2 → 0.42
+worst=3 → 0.68
+
+5.2 Apply status floor
+If status == "critical": base_score = max(base_score, 0.55)
+If status == "warning":  base_score = max(base_score, 0.28)
+
+5.3 ML boost
+If ml_anomaly:
+base_score += max(0, (anomaly_score + 0.1) × 0.25)
+
+5.4 Cap
+failure_probability = min(base_score, 1.0)
+
+UI shows:
+Failure Risk % = failure_probability × 100
+
+Judge value:
+This scoring is interpretable because it explicitly shows the role of
+rule severity + ML support.
+
+======================================================================
+6) OPTIMIZATION ENGINE — EXPLAINABLE $/hour SAVINGS (2 minutes)
+======================================================================
+The optimizer is in:
+backend/src/ml_models/optimizer.py
+
+6.1 Tariff model
+Rates ($/kWh):
+off_peak = 0.08
+shoulder = 0.12
+on_peak  = 0.18
+
+Peak window:
+peak_hours = 9:00 to 17:00 (local hour)
+
+6.2 Candidate selection
+We pick energy-heavy assets:
+Select top 25% of sensors by current energy_consumption:
+k = ceil(n × 0.25)
+high_consumption = nlargest(k, energy_consumption)
+
+6.3 Cost optimization: shift load outside on-peak
+If current time is in peak_hours:
+potential_savings ≈ hourly_kWh × (on_peak - off_peak)
+priority: high/medium by magnitude
+action: schedule_shift
+
+If outside peak_hours:
+we still compute a demo-friendly potential based on shoulder vs off-peak:
+potential_savings ≈ hourly_kWh × (shoulder - off_peak)
+action: schedule_shift (lower priority)
+
+6.4 Predictive maintenance recommendations
+Sensors with failure_probability > 0.7:
+potential_savings = max(0.5, failure_probability × hourly_energy × on_peak)
+action: schedule_maintenance
+priority: critical
+
+6.5 Energy efficiency recommendations
+Fleet mean:
+avg_consumption = mean(energy_consumption)
+
+Inefficient sensors if:
+energy_consumption > avg_consumption × 1.3
+
+excess_kWh = max(0, sensor_energy - avg_consumption)
+potential_savings = max(0.5, excess_kWh × shoulder)
+action: efficiency_audit
+
+6.6 Operational suggestions (idle / night optimization)
+Define low tail:
+low_cutoff = quantile(energy_consumption, 0.15)
+low_usage = energy_consumption ≤ max(low_cutoff, 1e-6)
+
+Night hours: hour < 6 OR hour > 20
+For device types in {pump, cooling_tower, conveyor}:
+title varies; action: schedule_shutdown
+potential_savings ≈ max(0.5, energy × off_peak × 8)
+
+Judge note:
+To look realistic, suggestions are diversified:
+we cap counts per type and rotate templates so cards do not repeat identically.
+
+======================================================================
+7) LIVE DASHBOARD & EXPLAINABILITY (45–60 seconds)
+======================================================================
+Redis is updated by stream processor:
+• sensor:{sensor_id} JSON snapshot with TTL
+• dashboard:stats hash (total_energy, total_readings, etc.)
+
+API exposes:
+• /api/dashboard/stats to show live KPIs
+• /api/optimization/suggestions to show calculated $/hour recommendations
+
+Frontend shows:
+• Sensor cards: current, temp, pressure, energy, failure risk, anomaly score
+• Status badges: normal/warning/critical
+• Optimization cards: action, priority, potential_savings, explanations
+• Scheduling modals: choose off-peak windows aligned with tariff math
+
+======================================================================
+8) DEMO “TALK TRACK” (1–2 minutes)
+======================================================================
+1) Start on Dashboard:
+   - point out threshold classification edges (mention temperature/load/voltage/energy).
+   - show a sensor with non-critical temperature but higher risk due to another metric.
+   - explain: overall status uses severity contributions, not naive “any CRITICAL”.
+
+2) Open Optimization:
+   - click Refresh Suggestions.
+   - toggle Auto-Optimize to show periodic syncing.
+   - click Apply Suggestion:
+     modal shows projected savings and session totals.
+
+3) Click Schedule:
+   - choose tariff-aligned windows (off-peak/shoulder).
+   - confirm schedule → show committed schedules list.
+
+4) Open Analytics:
+   - show trends for energy and efficiency over the selected window.
+   - explain charts use synthetic series built from Redis totals (demo visualization).
+
+======================================================================
+9) CLOSING (20–30 seconds)
+======================================================================
+VoltAI demonstrates a full industrial-grade pipeline:
+real-time streaming, explainable rule-based health bands, ML anomaly support,
+and a tariff-aware optimizer that produces actionable, calculable suggestions.
+
+Thank you. I’m happy to answer questions about the threshold math,
+failure risk scoring, or how the optimization estimates $/hour savings.
+
+======================================================================
+10) OPTIONAL TECHNICAL Q&A (quick answers)
+======================================================================
+Q1) Why is temperature LOW sometimes not CRITICAL?
+Answer: overall status is computed from per-metric severity contributions.
+Temperature LOW means idle/underutilized (rule semantics), so it doesn’t
+force critical unless other metrics indicate true risk.
+
+Q2) Why use Isolation Forest?
+Answer: thresholds catch known limits; ML catches unexpected behavior patterns.
+We store ml_anomaly/anomaly_score and use it only as a risk boost.
+
+Q3) How do you compute potential savings?
+Answer: savings are estimated from kWh and tariff differentials:
+on_peak vs off_peak or shoulder vs off_peak, then packaged into suggestions
+with projected daily/monthly impact in the UI.
+
+Q4) Where are the formulas?
+Answer:
+Energy: backend/src/data_simulator/sensor_simulator.py
+Bands: backend/src/sensor_thresholds.py
+ML + failure risk: backend/src/stream_processor/processor.py
+Optimization: backend/src/ml_models/optimizer.py
+UI display: frontend/src/components/Optimization.jsx and relevant chart components.
+
